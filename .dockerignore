@@ -1,0 +1,9 @@
+.git
+.claude
+*.md
+node_modules/
+dist/
+npm-debug.log*
+deploy/
+test/
+db/
