@@ -1,9 +1,11 @@
+import { createDbPool } from "./db.js";
 import { buildApp } from "./router.js";
 
 const port = Number(process.env.HTTP_PORT ?? 3000);
 const version = process.env.APP_VERSION ?? "dev"; // Dockerfile 이 GIT_SHA 로 주입
 
-const app = buildApp();
+const pool = createDbPool();
+const app = buildApp({ pool });
 
 async function main() {
   try {
@@ -23,6 +25,7 @@ for (const signal of ["SIGTERM", "SIGINT"] as const) {
     timer.unref();
     try {
       await app.close();
+      await pool.end();
       process.exit(0);
     } catch {
       process.exit(1);
