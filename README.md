@@ -1,7 +1,7 @@
 # svc-auth
 
 MSA 인증 서비스 — 사용자 등록 / 로그인 / 세션 / 토큰 발급. Node.js 22 / TypeScript / Fastify 5.
-매니페스트는 `k8s-gitops/manifests/auth/` 소유 (본 레포는 코드 + Dockerfile + Jenkinsfile).
+k8s 매니페스트는 [k8s-gitops](https://github.com/GGingGGang/k8s-gitops) 레포의 `manifests/auth/` 소유 (본 레포는 코드 + Dockerfile + Jenkinsfile).
 
 ## Ports
 
@@ -18,19 +18,22 @@ MSA 인증 서비스 — 사용자 등록 / 로그인 / 세션 / 토큰 발급. 
 | GET | `/metrics` | Prometheus 스크랩 엔드포인트 |
 | POST | `/register` | `{email, password, display_name, timezone}` → 사용자 생성 (argon2id 해싱). 이메일 중복 시 409 |
 
-`/login` `/refresh` `/logout` `/.well-known/jwks.json` 은 2M 턴에서 추가 예정 (아직 미구현).
+`/login` `/refresh` `/logout` `/.well-known/jwks.json` 은 추후 추가 예정 (아직 미구현).
 
 ## Environment Variables
 
 ```bash
 HTTP_PORT=3000                    # listen port (default 3000)
-DB_HOST=                          # required
+DB_HOST=                          # default 127.0.0.1 — 실 배포에서는 반드시 주입
 DB_PORT=3306                      # default 3306
-DB_USER=                          # required
-DB_PASSWORD=                      # required, no default — never commit
+DB_USER=                          # default root — 실 배포에서는 반드시 주입
+DB_PASSWORD=                      # default empty — never commit
 DB_NAME=auth                      # default auth
-DB_SSL=true                       # default true (HeatWave requires ssl-mode=REQUIRED); set false for local/testcontainers MySQL
-DB_SSL_REJECT_UNAUTHORIZED=true   # default true
+DB_POOL_SIZE=10                   # default 10 (connection pool)
+DB_SSL=true                       # default true (HeatWave requires ssl-mode=REQUIRED); set false for local MySQL
+DB_SSL_REJECT_UNAUTHORIZED=false  # default false (HeatWave 서버 인증서에 IP SAN 없음 — 암호화만 수행)
+LOG_LEVEL=info                    # default info
+APP_VERSION=<GIT_SHA>             # Dockerfile 이 주입 (기본 dev)
 ```
 
 ## Database
@@ -44,9 +47,9 @@ migrate -path db/migrations -database "mysql://app_auth:$DB_PASSWORD@tcp($DB_HOS
 
 ```bash
 npm ci
-docker compose up -d mysql redis        # 또는 testcontainers
+docker run -d -p 3306:3306 -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=auth mysql:8
 migrate -path db/migrations -database "mysql://root:root@tcp(localhost:3306)/auth" up
-npm run dev
+DB_PASSWORD=root DB_SSL=false npm run dev
 ```
 
 ## Build
