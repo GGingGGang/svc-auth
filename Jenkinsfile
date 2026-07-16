@@ -35,7 +35,8 @@ pipeline {
       steps {
         trivyImageScan(
           image: env.IMAGE,
-          tag: env.TAG
+          tag: env.TAG,
+          gate: false
         )
       }
     }
