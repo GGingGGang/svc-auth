@@ -41,6 +41,14 @@ pipeline {
       }
     }
 
+    stage('Sign') {
+      steps {
+        cosignSign(
+          image: env.IMAGE
+        )
+      }
+    }
+
     stage('Bump') {
       steps {
         deployBump(service: env.SVC, image: env.IMAGE, tag: env.TAG)
