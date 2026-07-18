@@ -59,4 +59,4 @@ npm run build
 node dist/server.js
 ```
 
-CI: Jenkins(`services` org folder) → Kaniko → GHCR → deployBump → ArgoCD.
+CI: Jenkins(`services` org folder) → Kaniko → GHCR → Trivy scan(warn) → cosign sign → deployBump → ArgoCD. 배포 시 Kyverno 가 admission 에서 서명 검증(Audit).
