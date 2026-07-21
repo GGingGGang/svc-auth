@@ -1,12 +1,19 @@
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
 import Fastify, { type FastifyInstance } from "fastify";
+import type { Redis } from "ioredis";
 import type { Pool } from "mysql2/promise";
 import { collectDefaultMetrics, register } from "prom-client";
 
 import { createDbPool } from "./db.js";
 import { healthz, readyz } from "./health.js";
+import type { SigningKey } from "./keys.js";
+import { jwksRoutes } from "./routes/jwks.js";
+import { loginRoutes } from "./routes/login.js";
+import { logoutRoutes } from "./routes/logout.js";
+import { refreshRoutes } from "./routes/refresh.js";
 import { registerRoutes } from "./routes/register.js";
+import { loadTokenEnv, type TokenEnv } from "./tokens.js";
 
 const okResponseSchema = {
   type: "object",
@@ -19,9 +26,12 @@ collectDefaultMetrics();
 
 export interface BuildAppOptions {
   pool?: Pool;
+  redis: Redis;
+  signingKey: SigningKey;
+  tokenEnv?: TokenEnv;
 }
 
-export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
+export function buildApp(options: BuildAppOptions): FastifyInstance {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
@@ -37,6 +47,8 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
   });
 
   const pool = options.pool ?? createDbPool();
+  const { redis, signingKey } = options;
+  const tokenEnv = options.tokenEnv ?? loadTokenEnv();
   const version = process.env.APP_VERSION ?? "dev";
 
   app.register(fastifySwagger, {
@@ -83,6 +95,10 @@ export function buildApp(options: BuildAppOptions = {}): FastifyInstance {
     );
 
     app.register(registerRoutes, { pool });
+    app.register(loginRoutes, { pool, redis, signingKey, tokenEnv });
+    app.register(refreshRoutes, { redis, signingKey, tokenEnv });
+    app.register(logoutRoutes, { redis });
+    app.register(jwksRoutes, { signingKey });
   });
 
   return app;
