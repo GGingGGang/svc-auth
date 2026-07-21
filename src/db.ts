@@ -16,11 +16,10 @@ function parseBool(value: string | undefined, fallback: boolean): boolean {
   return value.toLowerCase() !== "false";
 }
 
-// DB_PORT/DB_SSL/DB_SSL_REJECT_UNAUTHORIZED are not in PLAN.md §8 (which hardcodes 3306
-// and assumes ssl-mode=REQUIRED) but are needed to point the same pool code at a non-default
-// port/host (e.g. testcontainers) without touching HeatWave defaults.
+// DB_PORT/DB_SSL/DB_SSL_REJECT_UNAUTHORIZED let the same pool code target a non-default
+// port/host (local MySQL, testcontainers) without touching the HeatWave defaults below.
 // sslRejectUnauthorized defaults to false because HeatWave's server cert has no IP SAN —
-// full verification fails; ssl-mode=REQUIRED only calls for encryption, not verification.
+// full verification fails; encryption in transit still holds without it.
 export function loadDbConfig(env: NodeJS.ProcessEnv = process.env): DbConfig {
   return {
     host: env.DB_HOST ?? "127.0.0.1",
