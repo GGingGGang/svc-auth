@@ -54,11 +54,28 @@ migrate -path db/migrations -database "mysql://root:root@tcp(localhost:3306)/aut
 DB_PASSWORD=root DB_SSL=false npm run dev
 ```
 
+golang-migrate CLI 없이 검증하려면 컨테이너로 대체 가능:
+
+```bash
+docker network create svcauth-test-net
+docker run -d --name svcauth-mysql --network svcauth-test-net -e MYSQL_ROOT_PASSWORD=root -e MYSQL_DATABASE=auth -p 3306:3306 mysql:8
+docker run --rm --network svcauth-test-net -v "$(pwd)/db/migrations:/migrations" \
+  migrate/migrate:v4.18.1 -path=/migrations -database "mysql://root:root@tcp(svcauth-mysql:3306)/auth" up
+```
+
 ## Build
 
 ```bash
 npm run build
 node dist/server.js
 ```
+
+## Test
+
+```bash
+npm test
+```
+
+`vitest` + `testcontainers`(`@testcontainers/mysql`)로 실제 MySQL 컨테이너를 띄워 `0001_init` 마이그레이션 DDL을 적용한 뒤 `/register`를 검증한다 (성공 201, 이메일 중복 409). Docker 데몬이 필요하다.
 
 CI: Jenkins(`services` org folder) → Kaniko → GHCR → Trivy scan(warn) → cosign sign → deployBump → ArgoCD. 배포 시 Kyverno 가 admission 에서 서명 검증(Audit).
