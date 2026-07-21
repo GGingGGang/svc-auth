@@ -2,10 +2,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { MySqlContainer, type StartedMySqlContainer } from "@testcontainers/mysql";
+import type { Redis } from "ioredis";
 import { createConnection, createPool, type Pool } from "mysql2/promise";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { buildApp } from "../router.js";
+import { generateTestSigningKey } from "../test-support/signing-key.js";
+
+// this file only exercises /register, which never touches redis — a stub is enough.
+const stubRedis = {} as Redis;
 
 const migrationSql = readFileSync(
   fileURLToPath(new URL("../../db/migrations/0001_init.up.sql", import.meta.url)),
@@ -43,7 +48,8 @@ describe("POST /register", () => {
       connectionLimit: 5,
     });
 
-    app = buildApp({ pool });
+    const signingKey = await generateTestSigningKey();
+    app = buildApp({ pool, redis: stubRedis, signingKey });
     await app.ready();
   }, 120_000);
 
