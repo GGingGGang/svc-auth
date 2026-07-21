@@ -1,3 +1,5 @@
+> 이 애플리케이션 레포지토리는 AI 코드 에이전트가 구현했습니다.
+
 # svc-auth
 
 MSA 인증 서비스 — 사용자 등록 / 로그인 / 세션 / 토큰 발급. Node.js 22 / TypeScript / Fastify 5.
