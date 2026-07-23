@@ -1,5 +1,6 @@
 import { createDbPool } from "./db.js";
 import { loadSigningKey } from "./keys.js";
+import { shutdownTracing } from "./observability/tracing.js";
 import { createRedisClient } from "./redis.js";
 import { buildApp } from "./router.js";
 
@@ -28,6 +29,7 @@ async function main() {
         await app.close();
         await pool.end();
         redis.disconnect();
+        await shutdownTracing();
         process.exit(0);
       } catch {
         process.exit(1);

@@ -8,6 +8,8 @@ import { collectDefaultMetrics, register } from "prom-client";
 import { createDbPool } from "./db.js";
 import { healthz, readyz } from "./health.js";
 import type { SigningKey } from "./keys.js";
+import { loadLoginSecurityEnv, type LoginSecurityEnv } from "./loginSecurity.js";
+import { registerHttpTracing } from "./observability/httpTracing.js";
 import { jwksRoutes } from "./routes/jwks.js";
 import { loginRoutes } from "./routes/login.js";
 import { logoutRoutes } from "./routes/logout.js";
@@ -29,6 +31,7 @@ export interface BuildAppOptions {
   redis: Redis;
   signingKey: SigningKey;
   tokenEnv?: TokenEnv;
+  loginSecurityEnv?: LoginSecurityEnv;
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
@@ -49,7 +52,10 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const pool = options.pool ?? createDbPool();
   const { redis, signingKey } = options;
   const tokenEnv = options.tokenEnv ?? loadTokenEnv();
+  const loginSecurityEnv = options.loginSecurityEnv ?? loadLoginSecurityEnv();
   const version = process.env.APP_VERSION ?? "dev";
+
+  registerHttpTracing(app);
 
   app.register(fastifySwagger, {
     openapi: {
@@ -95,7 +101,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     );
 
     app.register(registerRoutes, { pool });
-    app.register(loginRoutes, { pool, redis, signingKey, tokenEnv });
+    app.register(loginRoutes, { pool, redis, signingKey, tokenEnv, loginSecurityEnv });
     app.register(refreshRoutes, { redis, signingKey, tokenEnv });
     app.register(logoutRoutes, { redis });
     app.register(jwksRoutes, { signingKey });
