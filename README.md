@@ -123,18 +123,21 @@ node dist/server.js
 
 ## Test
 
+유닛(Docker 불요)과 통합(testcontainers, Docker 필요)이 분리되어 있다 (`../test-contract.md` §3). 통합 테스트는 파일명 `*.integration.test.ts` 컨벤션으로 `vitest.config.ts` 기본 설정에서 제외된다.
+
 ```bash
-npm test
+npm test                  # 유닛만 (vitest.config.ts). Docker 불요 — Jenkins 유닛 게이트가 실행
+npm run test:integration  # 통합만 (vitest.integration.config.ts). Docker 데몬 필요 — 이 repo의 GitHub Actions 가 실행
 ```
 
-`vitest` + `testcontainers`(`@testcontainers/mysql`)로 실제 MySQL 컨테이너를 띄워 `0001_init` 마이그레이션 DDL을 적용한 뒤 `/register`를 검증한다 (성공 201, 이메일 중복 409). Docker 데몬이 필요하다.
-
-`src/routes/auth-flow.test.ts` 는 `@testcontainers/mysql` + `@testcontainers/redis` 로 MySQL/Redis 를 함께 띄워 `register → login → JWKS 검증 → refresh(회전) → refresh 재사용 감지(family 폐기) → logout` 전체 시나리오를 검증한다. JWKS 검증은 `/.well-known/jwks.json` 응답의 공개키를 `jose`(`importJWK`+`jwtVerify`)로 실제 access JWT 서명 검증까지 수행 — core 가 JWKS 로 검증하는 경로를 그대로 재현한다. 서명 키는 매 테스트 실행마다 `jose.generateKeyPair`로 생성한 임시 ES256 키(`src/test-support/signing-key.ts`)를 쓰며 k8s Secret 을 건드리지 않는다.
-
-`/openapi.json` 이 실제 구현된 엔드포인트만 노출하는지(`/documentation`, `/openapi.json` 자체는 스펙에서 숨김)는 `src/router.test.ts` 에서 DB 없이 검증한다.
-
-`src/routes/login-security.test.ts` 는 MySQL+Redis testcontainers 로 로그인 rate limit(이메일/IP 각각 초과 시 429 + `Retry-After`)과 계정 잠금(연속 실패 임계치 도달 시 `users.status='locked'` 전환 + 이후 정상 비밀번호도 거부, 로그인 성공 시 실패 카운터 리셋)을 검증한다. 매 테스트 전 `redis.flushdb()` 로 카운터를 초기화해 테스트 간 간섭을 없앤다.
+`src/router.test.ts` 는 `/openapi.json` 이 실제 구현된 엔드포인트만 노출하는지(`/documentation`, `/openapi.json` 자체는 스펙에서 숨김)를 DB 없이 검증한다.
 
 `src/observability/httpTracing.test.ts` 는 DB 없이 순수 Fastify 인스턴스로 W3C `traceparent` 헤더 전파(인바운드 trace id 를 그대로 이어받는지), 헤더가 없을 때 유효한 trace id 를 새로 발급하는지, span/로그에 PII 가 들어가지 않는지를 검증한다.
 
-CI: Jenkins(`services` org folder) → Kaniko → GHCR → Trivy scan(warn) → cosign sign → deployBump → ArgoCD. 배포 시 Kyverno 가 admission 에서 서명 검증(Audit).
+`src/routes/register.integration.test.ts` 는 `@testcontainers/mysql` 로 실제 MySQL 컨테이너를 띄워 `0001_init` 마이그레이션 DDL을 적용한 뒤 `/register`를 검증한다 (성공 201, 이메일 중복 409).
+
+`src/routes/auth-flow.integration.test.ts` 는 `@testcontainers/mysql` + `@testcontainers/redis` 로 MySQL/Redis 를 함께 띄워 `register → login → JWKS 검증 → refresh(회전) → refresh 재사용 감지(family 폐기) → logout` 전체 시나리오를 검증한다. JWKS 검증은 `/.well-known/jwks.json` 응답의 공개키를 `jose`(`importJWK`+`jwtVerify`)로 실제 access JWT 서명 검증까지 수행 — core 가 JWKS 로 검증하는 경로를 그대로 재현한다. 서명 키는 매 테스트 실행마다 `jose.generateKeyPair`로 생성한 임시 ES256 키(`src/test-support/signing-key.ts`)를 쓰며 k8s Secret 을 건드리지 않는다.
+
+`src/routes/login-security.integration.test.ts` 는 MySQL+Redis testcontainers 로 로그인 rate limit(이메일/IP 각각 초과 시 429 + `Retry-After`)과 계정 잠금(연속 실패 임계치 도달 시 `users.status='locked'` 전환 + 이후 정상 비밀번호도 거부, 로그인 성공 시 실패 카운터 리셋)을 검증한다. 매 테스트 전 `redis.flushdb()` 로 카운터를 초기화해 테스트 간 간섭을 없앤다.
+
+CI: Jenkins(`services` org folder, 유닛 게이트) → Kaniko → GHCR → Trivy scan(warn) → cosign sign → deployBump → ArgoCD (배포 시 Kyverno 가 admission 에서 서명 검증, Audit). 별도로 이 repo의 `.github/workflows/test.yml` (GitHub Actions) 이 push(main)/PR 마다 유닛+통합 풀 스위트를 실행 — Jenkins 파이프라인과 병렬이며 이미지 생성 게이트에는 관여하지 않는다.
