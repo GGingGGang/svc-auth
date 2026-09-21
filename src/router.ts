@@ -6,6 +6,7 @@ import type { Pool } from "mysql2/promise";
 import { collectDefaultMetrics, register } from "prom-client";
 
 import { createDbPool } from "./db.js";
+import { registerCors } from "./cors.js";
 import { healthz, readyz } from "./health.js";
 import type { SigningKey } from "./keys.js";
 import { loadLoginSecurityEnv, type LoginSecurityEnv } from "./loginSecurity.js";
@@ -60,6 +61,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const loginSecurityEnv = options.loginSecurityEnv ?? loadLoginSecurityEnv();
   const version = process.env.APP_VERSION ?? "dev";
 
+  registerCors(app);
   registerHttpTracing(app);
 
   app.register(fastifySwagger, {
