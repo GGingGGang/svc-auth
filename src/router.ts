@@ -94,7 +94,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     app.get(
       "/readyz",
       { schema: { tags: ["ops"], summary: "Readiness probe", response: { 200: okResponseSchema } } },
-      readyz,
+      readyz(pool, redis),
     );
     app.get(
       "/metrics",
