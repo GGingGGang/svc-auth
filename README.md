@@ -57,14 +57,15 @@ JWT_ISSUER=auth.ggang.cloud        # access JWT 의 iss claim
 ACCESS_TTL=3600                   # access JWT TTL(초)
 REFRESH_TTL=1209600               # refresh 토큰 TTL(초, sliding) — 14d
 REDIS_ADDR=127.0.0.1:6379          # host:port. 실 배포는 redis.data.svc.cluster.local:6379
-REDIS_DB=0                         # refresh token / family / rate-limit / lockout counter 저장 DB index
+REDIS_DB=0                         # refresh token / family / rate-limit 저장 DB index
 
 LOGIN_RATE_LIMIT_IP_MAX=20             # 기본 20 — IP 당 window 내 최대 /login 시도
 LOGIN_RATE_LIMIT_IP_WINDOW_SECONDS=60  # 기본 60초
 LOGIN_RATE_LIMIT_EMAIL_MAX=10          # 기본 10 — 이메일 당 window 내 최대 /login 시도
 LOGIN_RATE_LIMIT_EMAIL_WINDOW_SECONDS=60  # 기본 60초
-LOGIN_LOCKOUT_THRESHOLD=5              # 기본 5 — 이 횟수만큼 비밀번호 연속 실패 시 users.status='locked'
-LOGIN_LOCKOUT_WINDOW_SECONDS=900       # 기본 900초(15분) — 실패 카운터 TTL(성공 로그인 시 즉시 리셋)
+LOGIN_LOCKOUT_THRESHOLD=5              # 기본 5 — 이 횟수만큼 비밀번호 연속 실패 시 임시 잠금
+LOGIN_LOCKOUT_WINDOW_SECONDS=900       # 기본 900초(15분) — 첫 실패부터 집계 기간
+LOGIN_LOCKOUT_DURATION_SECONDS=900     # 기본 900초(15분) — 마지막 실패부터 잠금 기간
 
 OTEL_SERVICE_NAME=auth                  # 기본 auth. resource attribute service.name
 OTEL_RESOURCE_ATTRIBUTES=              # 예: service.namespace=auth,service.version=<git-sha>
@@ -78,7 +79,7 @@ OTEL_EXPORTER_OTLP_PROTOCOL=grpc       # OTLPTraceExporter(grpc) 고정
 `POST /login` 은 두 계층의 브루트포스 방어를 갖는다 (`src/loginSecurity.ts`):
 
 - **Rate limit** — Redis DB0 고정 윈도우 카운터. IP 단위(`auth:loginrl:ip:<ip>`)와 이메일 단위(`auth:loginrl:email:<sha256(email)>`, 이메일은 해시 후 저장)를 모두 검사하며 어느 한쪽이라도 초과하면 `429 {"error":"rate_limited"}` + `Retry-After` 헤더를 반환한다. IP 체크가 이메일 체크보다 먼저 실행된다.
-- **Account lockout** — 비밀번호 불일치가 `LOGIN_LOCKOUT_THRESHOLD` 회 누적되면(`auth:loginfail:<user_id>`, TTL `LOGIN_LOCKOUT_WINDOW_SECONDS`) `users.status` 를 `active` → `locked` 로 전환(`PLAN.md` §6.3 ENUM)하고 Redis 카운터를 정리한다. 이미 잠긴 계정은 비밀번호가 맞아도 `401 {"error":"account_locked"}`. 로그인 성공 시 실패 카운터는 즉시 리셋된다.
+- **Account lockout** — 첫 실패부터 `LOGIN_LOCKOUT_WINDOW_SECONDS` 내 비밀번호 오류가 임계치에 도달하면 MySQL `login_locked_until`까지 임시 잠금한다. 잠금 만료 시 자동 해제되며, 운영상 `users.status`는 변경하지 않는다. 로그인 판정·실패 횟수 갱신·성공 시 초기화는 사용자 행 잠금 아래 처리한다. 배포 전에 `0002_login_lockout` 마이그레이션을 적용해야 한다.
 
 두 계층 모두 이메일 존재 여부를 흘리지 않도록 미가입 이메일도 동일하게 카운트된다.
 
@@ -168,6 +169,6 @@ npm run test:integration  # 통합만 (vitest.integration.config.ts). Docker 데
 
 `src/routes/auth-flow.integration.test.ts` 는 `@testcontainers/mysql` + `@testcontainers/redis` 로 MySQL/Redis 를 함께 띄워 `register → login → JWKS 검증 → refresh(회전) → refresh 재사용 감지(family 폐기) → logout` 전체 시나리오를 검증한다. JWKS 검증은 `/.well-known/jwks.json` 응답의 공개키를 `jose`(`importJWK`+`jwtVerify`)로 실제 access JWT 서명 검증까지 수행 — core 가 JWKS 로 검증하는 경로를 그대로 재현한다. 서명 키는 매 테스트 실행마다 `jose.generateKeyPair`로 생성한 임시 ES256 키(`src/test-support/signing-key.ts`)를 쓰며 k8s Secret 을 건드리지 않는다.
 
-`src/routes/login-security.integration.test.ts` 는 MySQL+Redis testcontainers 로 로그인 rate limit(이메일/IP 각각 초과 시 429 + `Retry-After`)과 계정 잠금(연속 실패 임계치 도달 시 `users.status='locked'` 전환 + 이후 정상 비밀번호도 거부, 로그인 성공 시 실패 카운터 리셋)을 검증한다. 매 테스트 전 `redis.flushdb()` 로 카운터를 초기화해 테스트 간 간섭을 없앤다.
+`src/routes/login-security.integration.test.ts` 는 MySQL+Redis testcontainers 로 로그인 rate limit, 임시 잠금·자동 해제, 동시 실패 집계를 검증한다. 매 테스트 전 `redis.flushdb()` 로 rate-limit 카운터를 초기화한다.
 
 CI: Jenkins(`services` org folder, 유닛 게이트) → Kaniko → GHCR → Trivy scan(warn) → cosign sign → deployBump → ArgoCD (배포 시 Kyverno 가 admission 에서 서명 검증, Audit). 별도로 이 repo의 `.github/workflows/test.yml` (GitHub Actions) 이 push(main)/PR 마다 유닛+통합 풀 스위트를 실행 — Jenkins 파이프라인과 병렬이며 이미지 생성 게이트에는 관여하지 않는다.

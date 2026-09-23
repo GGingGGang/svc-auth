@@ -16,7 +16,7 @@ import type { TokenEnv } from "../tokens.js";
 const migrationSql = readFileSync(
   fileURLToPath(new URL("../../db/migrations/0001_init.up.sql", import.meta.url)),
   "utf8",
-);
+) + readFileSync(fileURLToPath(new URL("../../db/migrations/0002_login_lockout.up.sql", import.meta.url)), "utf8");
 
 const tokenEnv: TokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1_209_600 };
 

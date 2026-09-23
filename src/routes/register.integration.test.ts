@@ -15,7 +15,7 @@ const stubRedis = {} as Redis;
 const migrationSql = readFileSync(
   fileURLToPath(new URL("../../db/migrations/0001_init.up.sql", import.meta.url)),
   "utf8",
-);
+) + readFileSync(fileURLToPath(new URL("../../db/migrations/0002_login_lockout.up.sql", import.meta.url)), "utf8");
 
 describe("POST /register", () => {
   let container: StartedMySqlContainer;

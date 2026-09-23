@@ -1,11 +1,8 @@
 import { createHash } from "node:crypto";
 
 import type { Redis } from "ioredis";
-import type { Pool } from "mysql2/promise";
 
-// Login-specific brute-force defenses (../PLAN.md 3M turn): a short-window
-// rate limit backed by Redis DB0 counters, plus a longer-window failed-login
-// counter that escalates into a persisted users.status = 'locked' lock.
+// Redis rate limits are separate from the transactional account lockout in login.ts.
 export interface LoginSecurityEnv {
   rateLimitIpMax: number;
   rateLimitIpWindowSeconds: number;
@@ -13,6 +10,7 @@ export interface LoginSecurityEnv {
   rateLimitEmailWindowSeconds: number;
   lockoutThreshold: number;
   lockoutWindowSeconds: number;
+  lockoutDurationSeconds: number;
 }
 
 export function loadLoginSecurityEnv(env: NodeJS.ProcessEnv = process.env): LoginSecurityEnv {
@@ -23,6 +21,7 @@ export function loadLoginSecurityEnv(env: NodeJS.ProcessEnv = process.env): Logi
     rateLimitEmailWindowSeconds: Number(env.LOGIN_RATE_LIMIT_EMAIL_WINDOW_SECONDS ?? 60),
     lockoutThreshold: Number(env.LOGIN_LOCKOUT_THRESHOLD ?? 5),
     lockoutWindowSeconds: Number(env.LOGIN_LOCKOUT_WINDOW_SECONDS ?? 900),
+    lockoutDurationSeconds: Number(env.LOGIN_LOCKOUT_DURATION_SECONDS ?? 900),
   };
 }
 
@@ -71,37 +70,4 @@ export async function checkLoginRateLimit(
     env.rateLimitEmailMax,
     env.rateLimitEmailWindowSeconds,
   );
-}
-
-function lockoutKey(userId: string): string {
-  return `auth:loginfail:${userId}`;
-}
-
-export async function resetFailedLogins(redis: Redis, userId: string): Promise<void> {
-  await redis.del(lockoutKey(userId));
-}
-
-// Failed attempts accumulate in a short-lived Redis counter; once the
-// threshold is crossed the lock is written to users.status so it survives the
-// counter's TTL and is immediately visible to every auth replica (no
-// cross-instance Redis-only state for something this security-sensitive).
-export async function recordFailedLogin(
-  pool: Pool,
-  redis: Redis,
-  env: LoginSecurityEnv,
-  userId: Buffer,
-  userIdStr: string,
-): Promise<{ locked: boolean }> {
-  const key = lockoutKey(userIdStr);
-  const count = await redis.incr(key);
-  if (count === 1) {
-    await redis.expire(key, env.lockoutWindowSeconds);
-  }
-  if (count < env.lockoutThreshold) {
-    return { locked: false };
-  }
-
-  await pool.execute("UPDATE users SET status = 'locked' WHERE id = ? AND status = 'active'", [userId]);
-  await redis.del(key);
-  return { locked: true };
 }

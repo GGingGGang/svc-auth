@@ -16,7 +16,7 @@ import type { TokenEnv } from "../tokens.js";
 const migrationSql = readFileSync(
   fileURLToPath(new URL("../../db/migrations/0001_init.up.sql", import.meta.url)),
   "utf8",
-);
+) + readFileSync(fileURLToPath(new URL("../../db/migrations/0002_login_lockout.up.sql", import.meta.url)), "utf8");
 
 const tokenEnv: TokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1_209_600 };
 
@@ -29,6 +29,7 @@ const loginSecurityEnv: LoginSecurityEnv = {
   rateLimitEmailWindowSeconds: 60,
   lockoutThreshold: 3,
   lockoutWindowSeconds: 900,
+  lockoutDurationSeconds: 900,
 };
 
 describe("login rate limiting + account lockout", () => {
@@ -115,11 +116,11 @@ describe("login rate limiting + account lockout", () => {
       expect(response.json()).toEqual({ error: "invalid_credentials" });
     }
 
-    // the failure that crosses the threshold flips users.status to locked
+    // the failure that crosses the threshold sets a temporary lock, not operational status
     const lockingAttempt = await login(email, "wrong password");
     expect(lockingAttempt.statusCode).toBe(401);
     expect(lockingAttempt.json()).toEqual({ error: "account_locked" });
-    expect(await userStatus(email)).toBe("locked");
+    expect(await userStatus(email)).toBe("active");
 
     // correct password no longer works once locked
     const afterLock = await login(email, password);
@@ -147,6 +148,31 @@ describe("login rate limiting + account lockout", () => {
     expect(afterReset.statusCode).toBe(401);
     expect(afterReset.json()).toEqual({ error: "invalid_credentials" });
     expect(await userStatus(email)).toBe("active");
+  });
+
+  it("automatically unlocks at the deadline and starts a fresh failure window", async () => {
+    const email = "expires@example.com";
+    await register(email);
+    for (let i = 0; i < loginSecurityEnv.lockoutThreshold; i++) {
+      await login(email, "wrong password");
+    }
+    await pool.execute(
+      "UPDATE users SET login_locked_until = UTC_TIMESTAMP(3) WHERE email = ?",
+      [email],
+    );
+    const firstAfterExpiry = await login(email, "wrong password");
+    expect(firstAfterExpiry.json()).toEqual({ error: "invalid_credentials" });
+    const success = await login(email, "correct horse battery staple");
+    expect(success.statusCode).toBe(200);
+  });
+
+  it("counts simultaneous failures without losing increments", async () => {
+    const email = "parallel@example.com";
+    await register(email);
+    const attempts = await Promise.all(Array.from({ length: loginSecurityEnv.lockoutThreshold }, () => login(email, "wrong password")));
+    expect(attempts.filter((response) => response.json().error === "account_locked")).toHaveLength(1);
+    const afterLock = await login(email, "correct horse battery staple");
+    expect(afterLock.json()).toEqual({ error: "account_locked" });
   });
 
   it("returns 429 with Retry-After once the per-email login rate limit is exceeded", async () => {
