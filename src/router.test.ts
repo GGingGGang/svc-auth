@@ -13,6 +13,26 @@ const stubPool = {} as Pool;
 const stubRedis = {} as Redis;
 
 describe("OpenAPI spec", () => {
+  it("rejects an invalid registration timezone before writing a user", async () => {
+    const signingKey = await generateTestSigningKey();
+    const app = buildApp({ pool: stubPool, redis: stubRedis, signingKey });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: {
+        email: "alice@example.com",
+        password: "correct horse battery staple",
+        display_name: "Alice",
+        timezone: "Mars/Olympus_Mons",
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().message).toBe("Invalid timezone");
+    await app.close();
+  });
+
   it("lists exactly the implemented endpoints, no more, no less", async () => {
     const signingKey = await generateTestSigningKey();
     const app = buildApp({ pool: stubPool, redis: stubRedis, signingKey });

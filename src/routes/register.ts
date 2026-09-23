@@ -79,6 +79,13 @@ export async function registerRoutes(app: FastifyInstance, opts: RegisterRouteOp
     async (req, reply) => {
       const { email, password, display_name, timezone } = req.body;
 
+      try {
+        new Intl.DateTimeFormat("en", { timeZone: timezone });
+      } catch (err) {
+        if (!(err instanceof RangeError)) throw err;
+        return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "Invalid timezone" });
+      }
+
       const passwordHash = await argon2.hash(password, { type: argon2.argon2id });
       const id = uuidv7obj();
 
