@@ -86,24 +86,24 @@ describe("POST /register", () => {
     expect(row.status).toBe("active");
   });
 
-  it("rejects a duplicate email with 409", async () => {
+  it("normalizes email and prevents concurrent duplicate accounts", async () => {
     const payload = {
-      email: "bob@example.com",
+      email: " Bob@Example.COM ",
       password: "another strong passphrase",
-      display_name: "Bob",
+      display_name: " Bob ",
       timezone: "UTC",
     };
 
-    const first = await app.inject({ method: "POST", url: "/register", payload });
-    expect(first.statusCode).toBe(201);
-
-    const second = await app.inject({
-      method: "POST",
-      url: "/register",
-      payload: { ...payload, display_name: "Bob Again" },
+    const responses = await Promise.all([
+      app.inject({ method: "POST", url: "/register", payload }),
+      app.inject({ method: "POST", url: "/register", payload: { ...payload, email: "bob@example.com" } }),
+    ]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([201, 409]);
+    expect(responses.find((response) => response.statusCode === 201)?.json()).toMatchObject({
+      email: "bob@example.com", display_name: "Bob",
     });
-
-    expect(second.statusCode).toBe(409);
-    expect(second.json()).toEqual({ error: "email_already_registered" });
+    expect(responses.find((response) => response.statusCode === 409)?.json()).toEqual({ error: "email_already_registered" });
+    const [rows] = await pool.query("SELECT email, display_name FROM users WHERE email = ?", ["bob@example.com"]);
+    expect(rows).toEqual([{ email: "bob@example.com", display_name: "Bob" }]);
   });
 });

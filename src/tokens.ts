@@ -168,6 +168,37 @@ export interface RotateRefreshTokenParams {
   refreshToken: string;
 }
 
+// Consume and issue in one Redis turn: a concurrent reuse cannot revoke the
+// family between those writes and leave a newly issued token alive.
+const ROTATE_LUA = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return {0} end
+local record = cjson.decode(raw)
+local family = 'auth:rtfam:' .. record.family_id
+local session = 'auth:session:' .. record.family_id
+local index = 'auth:userfam:' .. record.user_id
+if redis.call('SISMEMBER', family, ARGV[1]) == 0 then return {0} end
+if record.consumed then
+  for _, member in ipairs(redis.call('SMEMBERS', family)) do
+    redis.call('DEL', 'auth:refresh:' .. member)
+  end
+  redis.call('DEL', family, session)
+  redis.call('SREM', index, record.family_id)
+  return {2}
+end
+record.consumed = true
+redis.call('SET', KEYS[1], cjson.encode(record), 'KEEPTTL')
+redis.call('SET', KEYS[2], cjson.encode({user_id=record.user_id, family_id=record.family_id, issued_at=ARGV[3], consumed=false}), 'EX', ARGV[2])
+redis.call('SADD', family, ARGV[4])
+redis.call('EXPIRE', family, ARGV[2])
+local sessionRaw = redis.call('GET', session)
+local createdAt = sessionRaw and cjson.decode(sessionRaw).created_at or ARGV[3]
+redis.call('SET', session, cjson.encode({user_id=record.user_id, created_at=createdAt, last_active_at=ARGV[3]}), 'EX', ARGV[2])
+redis.call('SADD', index, record.family_id)
+redis.call('EXPIRE', index, ARGV[2])
+return {1, record.user_id}
+`;
+
 // One-time use: the record is marked consumed (not deleted outright) so a
 // second attempt with the same token is recognizable as reuse rather than
 // looking identical to an unknown/expired token — that recognition is what
@@ -175,28 +206,17 @@ export interface RotateRefreshTokenParams {
 export async function rotateRefreshToken(params: RotateRefreshTokenParams): Promise<RefreshResult> {
   const { redis, signingKey, tokenEnv, refreshToken } = params;
   const hash = hashToken(refreshToken);
-  const raw = await redis.get(refreshKey(hash));
-  if (!raw) {
-    return { ok: false, reason: "invalid" };
+  const nextToken = randomBytes(32).toString("base64url");
+  const nextHash = hashToken(nextToken);
+  const result = await redis.eval(
+    ROTATE_LUA, 2, refreshKey(hash), refreshKey(nextHash),
+    hash, tokenEnv.refreshTtlSeconds, new Date().toISOString(), nextHash,
+  ) as [number, string?];
+  if (result[0] !== 1) {
+    return { ok: false, reason: result[0] === 2 ? "reuse_detected" : "invalid" };
   }
-
-  const record = JSON.parse(raw) as RefreshRecord;
-  if (record.consumed) {
-    await revokeFamily(redis, record.family_id);
-    return { ok: false, reason: "reuse_detected" };
-  }
-
-  record.consumed = true;
-  await redis.set(refreshKey(hash), JSON.stringify(record), "KEEPTTL");
-
-  const pair = await issueTokenPair({
-    redis,
-    signingKey,
-    tokenEnv,
-    userId: record.user_id,
-    familyId: record.family_id,
-  });
-  return { ok: true, pair };
+  const access = await signAccessToken(result[1]!, signingKey, tokenEnv);
+  return { ok: true, pair: { accessToken: access.token, refreshToken: nextToken, expiresIn: access.expiresIn } };
 }
 
 // revokeFamily looks the session up by familyId (rather than requiring
@@ -204,19 +224,14 @@ export async function rotateRefreshToken(params: RotateRefreshTokenParams): Prom
 // reuse-detection path — neither of which touched the session index before
 // 5M — didn't need to change.
 export async function revokeFamily(redis: Redis, familyId: string): Promise<void> {
-  const sessionRaw = await redis.get(sessionKey(familyId));
-
-  const members = await redis.smembers(familyKey(familyId));
-  if (members.length > 0) {
-    await redis.del(...members.map(refreshKey));
-  }
-  await redis.del(familyKey(familyId));
-  await redis.del(sessionKey(familyId));
-
-  if (sessionRaw) {
-    const session = JSON.parse(sessionRaw) as SessionRecord;
-    await redis.srem(userFamKey(session.user_id), familyId);
-  }
+  await redis.eval(`
+    local session = redis.call('GET', KEYS[2])
+    for _, member in ipairs(redis.call('SMEMBERS', KEYS[1])) do
+      redis.call('DEL', 'auth:refresh:' .. member)
+    end
+    redis.call('DEL', KEYS[1], KEYS[2])
+    if session then redis.call('SREM', 'auth:userfam:' .. cjson.decode(session).user_id, ARGV[1]) end
+  `, 2, familyKey(familyId), sessionKey(familyId), familyId);
 }
 
 export async function logoutByRefreshToken(redis: Redis, refreshToken: string): Promise<void> {

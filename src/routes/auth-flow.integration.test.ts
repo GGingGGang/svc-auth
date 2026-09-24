@@ -105,6 +105,14 @@ describe("login -> refresh (rotation) -> reuse detection -> logout", () => {
     expect(typeof body.refresh_token).toBe("string");
   });
 
+  it("logs in with a trimmed, case-insensitive email", async () => {
+    const response = await app.inject({
+      method: "POST", url: "/login",
+      payload: { email: " CAROL@EXAMPLE.COM ", password: credentials.password },
+    });
+    expect(response.statusCode).toBe(200);
+  });
+
   it("exposes JWKS with Cache-Control and a key whose kid matches the signing key", async () => {
     const response = await app.inject({ method: "GET", url: "/.well-known/jwks.json" });
     expect(response.statusCode).toBe(200);
@@ -163,6 +171,21 @@ describe("login -> refresh (rotation) -> reuse detection -> logout", () => {
     });
     expect(descendantAfterRevocation.statusCode).toBe(401);
     expect(descendantAfterRevocation.json()).toEqual({ error: "invalid_refresh_token" });
+  });
+
+  it("allows only one concurrent rotation and revokes its descendant on reuse", async () => {
+    const { refresh_token } = await login();
+    const responses = await Promise.all([
+      app.inject({ method: "POST", url: "/refresh", payload: { refresh_token } }),
+      app.inject({ method: "POST", url: "/refresh", payload: { refresh_token } }),
+    ]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 401]);
+    expect(responses.find((response) => response.statusCode === 401)?.json()).toEqual({ error: "refresh_reuse_detected" });
+
+    const descendant = responses.find((response) => response.statusCode === 200)?.json().refresh_token;
+    const afterReuse = await app.inject({ method: "POST", url: "/refresh", payload: { refresh_token: descendant } });
+    expect(afterReuse.statusCode).toBe(401);
+    expect(afterReuse.json()).toEqual({ error: "invalid_refresh_token" });
   });
 
   it("rejects an unknown refresh token", async () => {

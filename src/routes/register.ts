@@ -19,9 +19,9 @@ const registerBodySchema = {
   required: ["email", "password", "display_name", "timezone"],
   additionalProperties: false,
   properties: {
-    email: { type: "string", minLength: 3, maxLength: 320, pattern: "^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$" },
-    password: { type: "string", minLength: 1, maxLength: 512 },
-    display_name: { type: "string", minLength: 1, maxLength: 100 },
+    email: { type: "string" },
+    password: { type: "string" },
+    display_name: { type: "string" },
     timezone: { type: "string", minLength: 1, maxLength: 64 },
   },
 } as const;
@@ -77,7 +77,21 @@ export async function registerRoutes(app: FastifyInstance, opts: RegisterRouteOp
       },
     },
     async (req, reply) => {
-      const { email, password, display_name, timezone } = req.body;
+      const { password, timezone } = req.body;
+      const email = req.body.email.trim().toLowerCase();
+      const display_name = req.body.display_name.trim();
+
+      if (Array.from(email).length > 320 || !/^[^\s@.]+(?:\.[^\s@.]+)*@[^\s@.]+(?:\.[^\s@.]+)+$/u.test(email)) {
+        return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "Invalid email" });
+      }
+      const passwordLength = Array.from(password).length;
+      if (passwordLength < 12 || passwordLength > 128) {
+        return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "Password must be 12 to 128 characters" });
+      }
+      const displayNameLength = Array.from(display_name).length;
+      if (displayNameLength < 1 || displayNameLength > 100) {
+        return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "Display name must be 1 to 100 characters" });
+      }
 
       try {
         new Intl.DateTimeFormat("en", { timeZone: timezone });

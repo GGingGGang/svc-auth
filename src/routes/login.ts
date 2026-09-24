@@ -31,7 +31,7 @@ const loginBodySchema = {
   required: ["email", "password"],
   additionalProperties: false,
   properties: {
-    email: { type: "string", minLength: 3, maxLength: 320 },
+    email: { type: "string", minLength: 3 },
     password: { type: "string", minLength: 1, maxLength: 512 },
   },
 } as const;
@@ -64,7 +64,11 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
       },
     },
     async (req, reply) => {
-      const { email, password } = req.body;
+      const { password } = req.body;
+      const email = req.body.email.trim().toLowerCase();
+      if (Array.from(email).length > 320) {
+        return reply.code(401).send({ error: "invalid_credentials" });
+      }
 
       const rateLimit = await checkLoginRateLimit(redis, securityEnv, req.ip, email);
       if (rateLimit.limited) {

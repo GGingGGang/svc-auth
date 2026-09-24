@@ -1,6 +1,6 @@
 import type { Redis } from "ioredis";
 import type { Pool } from "mysql2/promise";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildApp } from "./router.js";
 import { generateTestSigningKey } from "./test-support/signing-key.js";
@@ -13,6 +13,43 @@ const stubPool = {} as Pool;
 const stubRedis = {} as Redis;
 
 describe("OpenAPI spec", () => {
+  it("rejects overlong normalized login email before Redis or DB access", async () => {
+    const signingKey = await generateTestSigningKey();
+    const app = buildApp({ pool: stubPool, redis: stubRedis, signingKey });
+    await app.ready();
+
+    const response = await app.inject({
+      method: "POST", url: "/login",
+      payload: { email: ` ${"a".repeat(317)}@x.io `, password: "correct horse battery staple" },
+    });
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: "invalid_credentials" });
+    await app.close();
+  });
+
+  it("rejects invalid registration fields before writing a user", async () => {
+    const execute = vi.fn();
+    const signingKey = await generateTestSigningKey();
+    const app = buildApp({ pool: { execute } as unknown as Pool, redis: stubRedis, signingKey });
+    await app.ready();
+
+    const valid = { email: "alice@example.com", password: "123456789012", display_name: "Alice", timezone: "UTC" };
+    for (const payload of [
+      { ...valid, email: ` ${"a".repeat(317)}@x.io ` },
+      { ...valid, email: "alice at example.com" },
+      { ...valid, email: "alice@example..com" },
+      { ...valid, password: "😀".repeat(11) },
+      { ...valid, password: "😀".repeat(129) },
+      { ...valid, display_name: "  " },
+      { ...valid, display_name: ` ${"😀".repeat(101)} ` },
+    ]) {
+      const response = await app.inject({ method: "POST", url: "/register", payload });
+      expect(response.statusCode).toBe(400);
+    }
+    expect(execute).not.toHaveBeenCalled();
+    await app.close();
+  });
+
   it("rejects an invalid registration timezone before writing a user", async () => {
     const signingKey = await generateTestSigningKey();
     const app = buildApp({ pool: stubPool, redis: stubRedis, signingKey });
