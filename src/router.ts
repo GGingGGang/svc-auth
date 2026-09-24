@@ -13,6 +13,7 @@ import { loadLoginSecurityEnv, type LoginSecurityEnv } from "./loginSecurity.js"
 import { registerHttpTracing } from "./observability/httpTracing.js";
 import { jwksRoutes } from "./routes/jwks.js";
 import { loginRoutes } from "./routes/login.js";
+import { introspectRoutes } from "./routes/introspect.js";
 import { logoutRoutes } from "./routes/logout.js";
 import { refreshRoutes } from "./routes/refresh.js";
 import { registerRoutes } from "./routes/register.js";
@@ -119,10 +120,11 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
     app.register(registerRoutes, { pool });
     app.register(loginRoutes, { pool, redis, signingKey, tokenEnv, loginSecurityEnv });
-    app.register(refreshRoutes, { redis, signingKey, tokenEnv });
+    app.register(refreshRoutes, { pool, redis, signingKey, tokenEnv });
     app.register(logoutRoutes, { redis });
     app.register(jwksRoutes, { signingKey, secondaryKey });
-    app.register(sessionsRoutes, { redis, signingKey, secondaryKey, tokenEnv });
+    app.register(introspectRoutes, { pool, signingKey, secondaryKey, tokenEnv });
+    app.register(sessionsRoutes, { pool, redis, signingKey, secondaryKey, tokenEnv });
   });
 
   return app;

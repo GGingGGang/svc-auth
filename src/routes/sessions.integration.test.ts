@@ -13,7 +13,7 @@ import { issueTokenPair, rotateRefreshToken, signAccessToken, type TokenEnv } fr
 // are simulated with issueTokenPair() directly rather than going through
 // /login, which would need a real users row (MySQL) this test has no
 // reason to stand up.
-const stubPool = {} as Pool;
+const stubPool = { query: async () => [[{ status: "active" }], []] } as unknown as Pool;
 const tokenEnv: TokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1_209_600 };
 
 describe("session management (GET/DELETE /sessions)", () => {

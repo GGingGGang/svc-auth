@@ -1,12 +1,15 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Redis } from "ioredis";
+import type { Pool } from "mysql2/promise";
 
+import { isActiveUser } from "../accountStatus.js";
 import { verifyOwnAccessToken } from "../accessAuth.js";
 import type { SigningKey } from "../keys.js";
 import { listSessions, loadTokenEnv, revokeSessionForUser, type TokenEnv } from "../tokens.js";
 import { errorResponseSchema } from "./schemas.js";
 
 export interface SessionsRouteOptions {
+  pool: Pool;
   redis: Redis;
   signingKey: SigningKey;
   secondaryKey?: SigningKey;
@@ -24,7 +27,7 @@ const sessionSchema = {
 } as const;
 
 export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOptions): Promise<void> {
-  const { redis, signingKey, secondaryKey } = opts;
+  const { pool, redis, signingKey, secondaryKey } = opts;
   const tokenEnv = opts.tokenEnv ?? loadTokenEnv();
 
   // Shared bearer-token check for both routes below. Replies 401 itself (so
@@ -33,7 +36,7 @@ export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOp
     const header = req.headers.authorization;
     const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
     const userId = token ? await verifyOwnAccessToken(token, signingKey, secondaryKey, tokenEnv) : null;
-    if (!userId) {
+    if (!userId || !await isActiveUser(pool, userId)) {
       await reply.code(401).send({ error: "unauthorized" });
       return undefined;
     }

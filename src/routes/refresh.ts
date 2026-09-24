@@ -1,11 +1,14 @@
 import type { FastifyInstance } from "fastify";
 import type { Redis } from "ioredis";
+import type { Pool } from "mysql2/promise";
 
+import { isActiveUser } from "../accountStatus.js";
 import type { SigningKey } from "../keys.js";
-import { loadTokenEnv, rotateRefreshToken, type TokenEnv } from "../tokens.js";
+import { loadTokenEnv, refreshTokenOwner, revokeFamily, rotateRefreshToken, type TokenEnv } from "../tokens.js";
 import { errorResponseSchema, tokenResponseSchema } from "./schemas.js";
 
 export interface RefreshRouteOptions {
+  pool: Pool;
   redis: Redis;
   signingKey: SigningKey;
   tokenEnv?: TokenEnv;
@@ -25,7 +28,7 @@ const refreshBodySchema = {
 } as const;
 
 export async function refreshRoutes(app: FastifyInstance, opts: RefreshRouteOptions): Promise<void> {
-  const { redis, signingKey } = opts;
+  const { pool, redis, signingKey } = opts;
   const tokenEnv = opts.tokenEnv ?? loadTokenEnv();
 
   app.post<{ Body: RefreshBody }>(
@@ -41,6 +44,13 @@ export async function refreshRoutes(app: FastifyInstance, opts: RefreshRouteOpti
       },
     },
     async (req, reply) => {
+      const owner = await refreshTokenOwner(redis, req.body.refresh_token);
+      if (!owner) return reply.code(401).send({ error: "invalid_refresh_token" });
+      if (!await isActiveUser(pool, owner.userId)) {
+        await revokeFamily(redis, owner.familyId);
+        return reply.code(401).send({ error: "invalid_refresh_token" });
+      }
+
       const result = await rotateRefreshToken({
         redis,
         signingKey,

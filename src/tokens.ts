@@ -168,6 +168,13 @@ export interface RotateRefreshTokenParams {
   refreshToken: string;
 }
 
+export async function refreshTokenOwner(redis: Redis, refreshToken: string): Promise<{ userId: string; familyId: string } | null> {
+  const raw = await redis.get(refreshKey(hashToken(refreshToken)));
+  if (!raw) return null;
+  const record = JSON.parse(raw) as RefreshRecord;
+  return { userId: record.user_id, familyId: record.family_id };
+}
+
 // Consume and issue in one Redis turn: a concurrent reuse cannot revoke the
 // family between those writes and leave a newly issued token alive.
 const ROTATE_LUA = `
