@@ -1,5 +1,6 @@
 import { createDbPool } from "./db.js";
 import { loadSigningKey } from "./keys.js";
+import { migrateUp } from "./migrate.js";
 import { shutdownTracing } from "./observability/tracing.js";
 import { createRedisClient } from "./redis.js";
 import { buildApp } from "./router.js";
@@ -12,6 +13,8 @@ async function main() {
   if (!pem) {
     throw new Error("JWT_PRIVATE_KEY_PEM env is required");
   }
+
+  await migrateUp();
 
   const pool = createDbPool();
   const redis = createRedisClient();

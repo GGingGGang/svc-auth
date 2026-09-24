@@ -1,4 +1,4 @@
-import { createPool, type Pool, type PoolOptions } from "mysql2/promise";
+import { createConnection, createPool, type Connection, type Pool, type PoolOptions } from "mysql2/promise";
 
 export interface DbConfig {
   host: string;
@@ -33,8 +33,8 @@ export function loadDbConfig(env: NodeJS.ProcessEnv = process.env): DbConfig {
   };
 }
 
-export function createDbPool(config: DbConfig = loadDbConfig()): Pool {
-  const options: PoolOptions = {
+function dbOptions(config: DbConfig): PoolOptions {
+  return {
     host: config.host,
     port: config.port,
     user: config.user,
@@ -44,6 +44,12 @@ export function createDbPool(config: DbConfig = loadDbConfig()): Pool {
     waitForConnections: true,
     connectionLimit: config.connectionLimit,
   };
+}
 
-  return createPool(options);
+export function createDbPool(config: DbConfig = loadDbConfig()): Pool {
+  return createPool(dbOptions(config));
+}
+
+export function createMigrationConnection(config: DbConfig = loadDbConfig()): Promise<Connection> {
+  return createConnection({ ...dbOptions(config), multipleStatements: true });
 }

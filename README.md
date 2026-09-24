@@ -79,7 +79,7 @@ OTEL_EXPORTER_OTLP_PROTOCOL=grpc       # OTLPTraceExporter(grpc) 고정
 `POST /login` 은 두 계층의 브루트포스 방어를 갖는다 (`src/loginSecurity.ts`):
 
 - **Rate limit** — Redis DB0 고정 윈도우 카운터. IP 단위(`auth:loginrl:ip:<ip>`)와 이메일 단위(`auth:loginrl:email:<sha256(email)>`, 이메일은 해시 후 저장)를 모두 검사하며 어느 한쪽이라도 초과하면 `429 {"error":"rate_limited"}` + `Retry-After` 헤더를 반환한다. IP 체크가 이메일 체크보다 먼저 실행된다.
-- **Account lockout** — 첫 실패부터 `LOGIN_LOCKOUT_WINDOW_SECONDS` 내 비밀번호 오류가 임계치에 도달하면 MySQL `login_locked_until`까지 임시 잠금한다. 잠금 만료 시 자동 해제되며, 운영상 `users.status`는 변경하지 않는다. 로그인 판정·실패 횟수 갱신·성공 시 초기화는 사용자 행 잠금 아래 처리한다. 배포 전에 `0002_login_lockout` 마이그레이션을 적용해야 한다.
+- **Account lockout** — 첫 실패부터 `LOGIN_LOCKOUT_WINDOW_SECONDS` 내 비밀번호 오류가 임계치에 도달하면 MySQL `login_locked_until`까지 임시 잠금한다. 잠금 만료 시 자동 해제되며, 운영상 `users.status`는 변경하지 않는다. 로그인 판정·실패 횟수 갱신·성공 시 초기화는 사용자 행 잠금 아래 처리한다. 서비스 시작 시 `0002_login_lockout` 마이그레이션이 자동 적용된다.
 
 두 계층 모두 이메일 존재 여부를 흘리지 않도록 미가입 이메일도 동일하게 카운트된다.
 
@@ -116,6 +116,10 @@ OTEL_EXPORTER_OTLP_PROTOCOL=grpc       # OTLPTraceExporter(grpc) 고정
 - span attribute 는 `http.request.method` / `http.route` / `http.response.status_code` 뿐 — email/user_id 등 PII 는 절대 포함하지 않는다(§8.1).
 
 ## Database
+
+On startup, the service applies pending `db/migrations/*.up.sql` files using the
+existing `schema_migrations` table before opening its HTTP port. A failed or
+dirty migration stops startup. The runtime image includes these SQL files.
 
 ```bash
 # golang-migrate CLI (db/migrations/0001_init.{up,down}.sql)

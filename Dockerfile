@@ -12,6 +12,7 @@ ENV APP_VERSION=${GIT_SHA}
 WORKDIR /app
 COPY --from=builder /src/node_modules ./node_modules
 COPY --from=builder /src/dist ./dist
+COPY db/migrations ./db/migrations
 COPY --from=builder /src/package.json ./
 USER nonroot:nonroot
 EXPOSE 3000
