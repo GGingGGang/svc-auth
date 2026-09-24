@@ -8,11 +8,9 @@ export async function healthz() {
 
 export function readyz(pool: Pool, redis: Redis) {
   return async (_request: unknown, reply: FastifyReply) => {
-    try {
-      await Promise.all([pool.query("SELECT 1"), redis.ping()]);
-      return { status: "ready" };
-    } catch {
-      return reply.code(503).send({ status: "not_ready" });
-    }
+    const [db, cache] = await Promise.allSettled([pool.query("SELECT 1"), redis.ping()]);
+    if (db.status === "rejected") return reply.code(503).send({ status: "not_ready", database: "unavailable", sessions: cache.status === "fulfilled" ? "ready" : "unavailable" });
+    if (cache.status === "rejected") return { status: "partial", database: "ready", sessions: "unavailable" };
+    return { status: "ready", database: "ready", sessions: "ready" };
   };
 }

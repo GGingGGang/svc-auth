@@ -13,6 +13,34 @@ const stubPool = {} as Pool;
 const stubRedis = {} as Redis;
 
 describe("OpenAPI spec", () => {
+  it("trusts forwarded IPs only from configured proxies and returns a safe error ID", async () => {
+    vi.stubEnv("TRUSTED_PROXY_CIDRS", "10.244.0.0/16");
+    try {
+      const signingKey = await generateTestSigningKey();
+      const app = buildApp({ pool: stubPool, redis: stubRedis, signingKey });
+      const ips: string[] = [];
+      app.get("/test-error", async (req) => {
+        ips.push(req.ip);
+        throw new Error("private@example.com password=secret");
+      });
+      await app.ready();
+
+      for (const remoteAddress of ["10.244.0.92", "203.0.113.7"]) {
+        const response = await app.inject({
+          method: "GET", url: "/test-error", remoteAddress,
+          headers: { "x-forwarded-for": "198.51.100.8" },
+        });
+        expect(response.statusCode).toBe(500);
+        expect(response.json()).toEqual({ error: "internal_error" });
+        expect(response.headers["x-error-id"]).toMatch(/^[0-9a-f]{32}$/);
+      }
+      expect(ips).toEqual(["198.51.100.8", "203.0.113.7"]);
+      await app.close();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("rejects overlong normalized login email before Redis or DB access", async () => {
     const signingKey = await generateTestSigningKey();
     const app = buildApp({ pool: stubPool, redis: stubRedis, signingKey });

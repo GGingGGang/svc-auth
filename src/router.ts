@@ -1,6 +1,6 @@
 import fastifySwagger from "@fastify/swagger";
 import fastifySwaggerUi from "@fastify/swagger-ui";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, { LogController, type FastifyError, type FastifyInstance } from "fastify";
 import type { Redis } from "ioredis";
 import type { Pool } from "mysql2/promise";
 import { collectDefaultMetrics, register } from "prom-client";
@@ -21,7 +21,7 @@ import { loadTokenEnv, type TokenEnv } from "./tokens.js";
 
 const okResponseSchema = {
   type: "object",
-  properties: { status: { type: "string" } },
+  properties: { status: { type: "string" }, database: { type: "string" }, sessions: { type: "string" } },
   required: ["status"],
 } as const;
 
@@ -41,7 +41,10 @@ export interface BuildAppOptions {
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
+  const trustedProxies = process.env.TRUSTED_PROXY_CIDRS?.split(",").map((cidr) => cidr.trim()).filter(Boolean);
   const app = Fastify({
+    trustProxy: trustedProxies?.length ? trustedProxies : false,
+    logController: new LogController({ disableRequestLogging: true }),
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
       base: { service: "auth" },
@@ -63,6 +66,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
 
   registerCors(app);
   registerHttpTracing(app);
+
+  app.setErrorHandler((error, req, reply) => {
+    const failure = error as FastifyError;
+    const status = failure.statusCode && failure.statusCode < 500 ? failure.statusCode : 500;
+    req.log.error({ error_code: failure.code, status_code: status }, "request failed");
+    return reply.code(status).send({ error: status === 500 ? "internal_error" : "invalid_request" });
+  });
 
   app.register(fastifySwagger, {
     openapi: {

@@ -55,4 +55,10 @@ export function registerHttpTracing(app: FastifyInstance): void {
     }
     span.end();
   });
+
+  app.addHook("onSend", async (req: FastifyRequest, reply: FastifyReply) => {
+    if (reply.statusCode >= 400 && req.otelSpan) {
+      reply.header("X-Error-ID", req.otelSpan.spanContext().traceId);
+    }
+  });
 }

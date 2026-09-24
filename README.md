@@ -66,6 +66,7 @@ LOGIN_RATE_LIMIT_EMAIL_WINDOW_SECONDS=60  # 기본 60초
 LOGIN_LOCKOUT_THRESHOLD=5              # 기본 5 — 이 횟수만큼 비밀번호 연속 실패 시 임시 잠금
 LOGIN_LOCKOUT_WINDOW_SECONDS=900       # 기본 900초(15분) — 첫 실패부터 집계 기간
 LOGIN_LOCKOUT_DURATION_SECONDS=900     # 기본 900초(15분) — 마지막 실패부터 잠금 기간
+TRUSTED_PROXY_CIDRS=                  # 쉼표 구분 CIDR; 실제 ingress/proxy 소스만 지정. 미설정 시 전달된 IP 헤더 무시
 
 OTEL_SERVICE_NAME=auth                  # 기본 auth. resource attribute service.name
 OTEL_RESOURCE_ATTRIBUTES=              # 예: service.namespace=auth,service.version=<git-sha>
