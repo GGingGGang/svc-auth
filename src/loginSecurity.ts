@@ -34,19 +34,23 @@ function hashEmail(email: string): string {
 
 export type RateLimitResult = { limited: false } | { limited: true; retryAfterSeconds: number };
 
-// Fixed-window counter: INCR both creates and bumps the key atomically: only
-// the request that takes it from 0 to 1 arms the window's TTL, so later hits
-// in the same window don't keep pushing the expiry out.
+// Counter and expiry must commit together, or a failed EXPIRE leaves a
+// permanent rate-limit key.
+const HIT_WINDOW_LUA = `
+local count = redis.call('INCR', KEYS[1])
+local ttl = redis.call('TTL', KEYS[1])
+if ttl < 0 then
+  redis.call('EXPIRE', KEYS[1], ARGV[1])
+  ttl = tonumber(ARGV[1])
+end
+return {count, ttl}
+`;
+
 async function hitWindow(redis: Redis, key: string, max: number, windowSeconds: number): Promise<RateLimitResult> {
-  const count = await redis.incr(key);
-  if (count === 1) {
-    await redis.expire(key, windowSeconds);
-  }
+  const [count, ttl] = await redis.eval(HIT_WINDOW_LUA, 1, key, windowSeconds) as [number, number];
   if (count <= max) {
     return { limited: false };
   }
-
-  const ttl = await redis.ttl(key);
   return { limited: true, retryAfterSeconds: ttl > 0 ? ttl : windowSeconds };
 }
 

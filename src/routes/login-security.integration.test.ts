@@ -218,6 +218,21 @@ describe("login rate limiting + account lockout", () => {
     expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
   });
 
+  it("repairs a legacy rate-limit key without an expiry", async () => {
+    const ip = "192.0.2.50";
+    const key = `auth:loginrl:ip:${ip}`;
+    await redis.set(key, String(loginSecurityEnv.rateLimitIpMax));
+    expect(await redis.ttl(key)).toBe(-1);
+
+    const response = await app.inject({
+      method: "POST", url: "/login", remoteAddress: ip,
+      payload: { email: "expired-key@example.com", password: "wrong password" },
+    });
+    expect(response.statusCode).toBe(429);
+    expect(Number(response.headers["retry-after"])).toBeGreaterThan(0);
+    expect(await redis.ttl(key)).toBeGreaterThan(0);
+  });
+
   it("keeps an established session usable during a temporary login lock", async () => {
     const email = "existing-session@example.com";
     await register(email);
