@@ -50,10 +50,13 @@ async function main() {
   try {
     await app.listen({ port, host: "0.0.0.0" });
     app.log.info(`svc-auth ${version} listening on :${port}`);
-  } catch (err) {
-    app.log.error(err);
+  } catch {
+    app.log.error({ error_code: "startup_failed" }, "startup failed");
     process.exit(1);
   }
 }
 
-void main();
+void main().catch(() => {
+  console.error("startup_failed");
+  process.exit(1);
+});

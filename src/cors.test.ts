@@ -11,5 +11,6 @@ it("allows the configured browser origin and handles its preflight", async () =>
   const response = await app.inject({ method: "OPTIONS", url: "/login", headers: { origin: "https://www.ggang.cloud" } });
   expect(response.statusCode).toBe(204);
   expect(response.headers["access-control-allow-origin"]).toBe("https://www.ggang.cloud");
+  expect(response.headers["access-control-expose-headers"]).toBe("X-Request-ID, X-Error-ID, Retry-After");
   await app.close();
 });

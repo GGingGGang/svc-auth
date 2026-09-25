@@ -1,3 +1,5 @@
+import { randomBytes } from "node:crypto";
+
 import { propagation, ROOT_CONTEXT, SpanKind, SpanStatusCode, type Span } from "@opentelemetry/api";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 
@@ -6,6 +8,7 @@ import { tracer } from "./tracing.js";
 declare module "fastify" {
   interface FastifyRequest {
     otelSpan?: Span;
+    safeRequestId?: string;
   }
 }
 
@@ -16,6 +19,7 @@ declare module "fastify" {
 // limited to method/route/status — no email/user_id/raw path (§8.1 PII ban).
 export function registerHttpTracing(app: FastifyInstance): void {
   app.decorateRequest("otelSpan", undefined);
+  app.decorateRequest("safeRequestId", undefined);
 
   app.addHook("onRequest", async (req: FastifyRequest, reply: FastifyReply) => {
     const parentContext = propagation.extract(ROOT_CONTEXT, req.headers);
@@ -36,7 +40,8 @@ export function registerHttpTracing(app: FastifyInstance): void {
 
     req.otelSpan = span;
     const { traceId, spanId } = span.spanContext();
-    const boundLogger = req.log.child({ trace_id: traceId, span_id: spanId });
+    req.safeRequestId = randomBytes(16).toString("hex");
+    const boundLogger = req.log.child({ trace_id: traceId, span_id: spanId, request_id: req.safeRequestId });
     // reply.log starts out as a separate reference captured when the Reply
     // object was built, so it has to be rebound too — otherwise Fastify's
     // built-in "request completed" log (which logs through reply.log, not
@@ -57,8 +62,8 @@ export function registerHttpTracing(app: FastifyInstance): void {
   });
 
   app.addHook("onSend", async (req: FastifyRequest, reply: FastifyReply) => {
-    if (reply.statusCode >= 400 && req.otelSpan) {
-      reply.header("X-Error-ID", req.otelSpan.spanContext().traceId);
-    }
+    if (!req.safeRequestId) return;
+    reply.header("X-Request-ID", req.safeRequestId);
+    if (reply.statusCode >= 400) reply.header("X-Error-ID", req.safeRequestId);
   });
 }

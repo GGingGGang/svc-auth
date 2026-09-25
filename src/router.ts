@@ -71,7 +71,7 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   app.setErrorHandler((error, req, reply) => {
     const failure = error as FastifyError;
     const status = failure.statusCode && failure.statusCode < 500 ? failure.statusCode : 500;
-    req.log.error({ error_code: failure.code, status_code: status }, "request failed");
+    req.log.error({ error_code: status === 500 ? "internal_error" : "invalid_request", status_code: status }, "request failed");
     return reply.code(status).send({ error: status === 500 ? "internal_error" : "invalid_request" });
   });
 

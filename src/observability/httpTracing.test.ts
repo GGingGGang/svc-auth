@@ -58,6 +58,26 @@ describe("registerHttpTracing", () => {
     expect(completed?.trace_id).not.toBe("00000000000000000000000000000000");
   });
 
+  it("returns a server-generated request ID that matches the log, even with forged headers", async () => {
+    const { stream, lines } = captureStream();
+    const app = Fastify({ logger: { stream, level: "info" } });
+    registerHttpTracing(app);
+    app.get("/fail", async () => { throw new Error("secret@example.com"); });
+    await app.ready();
+
+    const response = await app.inject({ method: "GET", url: "/fail", headers: {
+      "x-request-id": "attacker-controlled",
+      traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    } });
+    await app.close();
+
+    const requestId = response.headers["x-request-id"];
+    expect(requestId).toMatch(/^[0-9a-f]{32}$/);
+    expect(response.headers["x-error-id"]).toBe(requestId);
+    expect(completedLog(lines)?.request_id).toBe(requestId);
+    expect(requestId).not.toBe("4bf92f3577b34da6a3ce929d0e0e4736");
+  });
+
   it("never puts PII (email/user_id) on the span — only method/route/status attributes", async () => {
     const { stream, lines } = captureStream();
     const app = Fastify({ logger: { stream, level: "info" } });

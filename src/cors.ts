@@ -12,6 +12,7 @@ export function registerCors(app: FastifyInstance, value = process.env.CORS_ALLO
     reply.header("Access-Control-Allow-Origin", origin);
     reply.header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
     reply.header("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    reply.header("Access-Control-Expose-Headers", "X-Request-ID, X-Error-ID, Retry-After");
     reply.header("Vary", "Origin");
     if (request.method === "OPTIONS") return reply.code(204).send();
   });
