@@ -113,6 +113,21 @@ describe("login -> refresh (rotation) -> reuse detection -> logout", () => {
     expect(response.statusCode).toBe(200);
   });
 
+  it("issues each account a token for its own user ID", async () => {
+    const other = { ...credentials, email: "dana@example.com", display_name: "Dana" };
+    const registration = await app.inject({ method: "POST", url: "/register", payload: other });
+    expect(registration.statusCode).toBe(201);
+    const carol = await login();
+    const dana = await app.inject({ method: "POST", url: "/login", payload: other });
+    expect(dana.statusCode).toBe(200);
+
+    const key = await importJWK(signingKey.publicJwk as Parameters<typeof importJWK>[0], "ES256");
+    const carolPayload = (await jwtVerify(carol.access_token, key, { issuer: tokenEnv.issuer, audience: "core" })).payload;
+    const danaPayload = (await jwtVerify(dana.json().access_token, key, { issuer: tokenEnv.issuer, audience: "core" })).payload;
+    expect(carolPayload.sub).not.toBe(danaPayload.sub);
+    expect(danaPayload.sub).toBe(registration.json().id);
+  });
+
   it("exposes JWKS with Cache-Control and a key whose kid matches the signing key", async () => {
     const response = await app.inject({ method: "GET", url: "/.well-known/jwks.json" });
     expect(response.statusCode).toBe(200);

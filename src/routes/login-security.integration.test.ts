@@ -199,4 +199,48 @@ describe("login rate limiting + account lockout", () => {
     expect(limited.statusCode).toBe(429);
     expect(limited.json()).toEqual({ error: "rate_limited" });
   });
+
+  it("ignores forwarded IP headers from an untrusted peer", async () => {
+    for (let i = 0; i < loginSecurityEnv.rateLimitIpMax; i++) {
+      const response = await app.inject({
+        method: "POST", url: "/login", remoteAddress: "192.0.2.10",
+        headers: { "x-forwarded-for": `198.51.100.${i + 1}` },
+        payload: { email: `spoof-${i}@example.com`, password: "wrong password" },
+      });
+      expect(response.statusCode).toBe(401);
+    }
+    const limited = await app.inject({
+      method: "POST", url: "/login", remoteAddress: "192.0.2.10",
+      headers: { "x-forwarded-for": "198.51.100.200" },
+      payload: { email: "spoof-overflow@example.com", password: "wrong password" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(Number(limited.headers["retry-after"])).toBeGreaterThan(0);
+  });
+
+  it("keeps an established session usable during a temporary login lock", async () => {
+    const email = "existing-session@example.com";
+    await register(email);
+    const existing = (await login(email, "correct horse battery staple")).json() as { access_token: string; refresh_token: string };
+    for (let i = 0; i < loginSecurityEnv.lockoutThreshold; i++) await login(email, "wrong password");
+
+    const introspect = await app.inject({ method: "GET", url: "/introspect", headers: { authorization: `Bearer ${existing.access_token}` } });
+    expect(introspect.statusCode).toBe(200);
+    expect(introspect.json()).toEqual({ active: true });
+    const refresh = await app.inject({ method: "POST", url: "/refresh", payload: { refresh_token: existing.refresh_token } });
+    expect(refresh.statusCode).toBe(200);
+  });
+
+  it("checks current account status when an old access token is retried", async () => {
+    const email = "status-changed@example.com";
+    await register(email);
+    const existing = (await login(email, "correct horse battery staple")).json() as { access_token: string; refresh_token: string };
+    await pool.execute("UPDATE users SET status = 'deleted' WHERE email = ?", [email]);
+
+    const introspect = await app.inject({ method: "GET", url: "/introspect", headers: { authorization: `Bearer ${existing.access_token}` } });
+    expect(introspect.statusCode).toBe(401);
+    expect(introspect.json()).toEqual({ error: "unauthorized" });
+    const refresh = await app.inject({ method: "POST", url: "/refresh", payload: { refresh_token: existing.refresh_token } });
+    expect(refresh.statusCode).toBe(401);
+  });
 });
