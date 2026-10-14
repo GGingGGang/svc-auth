@@ -4,7 +4,7 @@ import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-grpc";
 import { detectResources, envDetector, resourceFromAttributes } from "@opentelemetry/resources";
 import { BasicTracerProvider, BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base";
 
-const SERVICE_NAME = "auth";
+const SERVICE_NAME = process.env.OTEL_SERVICE_NAME || "auth";
 
 // W3C TraceContext + Baggage propagation is installed unconditionally — it only
 // parses/writes the `traceparent`/`tracestate`/`baggage` headers and costs
@@ -24,10 +24,15 @@ const resource = resourceFromAttributes({ "service.name": SERVICE_NAME }).merge(
 // TracerProvider itself is always real, so every span still gets a valid
 // trace/span id for log correlation even while export is off — only the
 // span processor (and therefore the outbound OTLP dial) is conditional.
-const spanProcessors: SpanProcessor[] =
-  process.env.OTEL_TRACES_EXPORTER === "otlp" ? [new BatchSpanProcessor(new OTLPTraceExporter())] : [];
+export function createTracerProvider(
+  exporterFactory: () => ConstructorParameters<typeof BatchSpanProcessor>[0] = () => new OTLPTraceExporter(),
+): BasicTracerProvider {
+  const spanProcessors: SpanProcessor[] =
+    process.env.OTEL_TRACES_EXPORTER === "otlp" ? [new BatchSpanProcessor(exporterFactory())] : [];
+  return new BasicTracerProvider({ resource, spanProcessors });
+}
 
-const tracerProvider = new BasicTracerProvider({ resource, spanProcessors });
+const tracerProvider = createTracerProvider();
 trace.setGlobalTracerProvider(tracerProvider);
 
 export const tracer = trace.getTracer(SERVICE_NAME);
