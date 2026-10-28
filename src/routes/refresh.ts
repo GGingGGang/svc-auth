@@ -2,7 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { Redis } from "ioredis";
 import type { Pool } from "mysql2/promise";
 
-import { isActiveUser } from "../accountStatus.js";
+import { activeCredentialVersion } from "../accountStatus.js";
 import type { SigningKey } from "../keys.js";
 import { loadTokenEnv, refreshTokenOwner, revokeFamily, rotateRefreshToken, type TokenEnv } from "../tokens.js";
 import { errorResponseSchema, tokenResponseSchema } from "./schemas.js";
@@ -46,7 +46,8 @@ export async function refreshRoutes(app: FastifyInstance, opts: RefreshRouteOpti
     async (req, reply) => {
       const owner = await refreshTokenOwner(redis, req.body.refresh_token);
       if (!owner) return reply.code(401).send({ error: "invalid_refresh_token" });
-      if (!await isActiveUser(pool, owner.userId)) {
+      const credentialVersion = await activeCredentialVersion(pool, owner.userId);
+      if (credentialVersion === null || credentialVersion !== owner.credentialVersion) {
         await revokeFamily(redis, owner.familyId);
         return reply.code(401).send({ error: "invalid_refresh_token" });
       }

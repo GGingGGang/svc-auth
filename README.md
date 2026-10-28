@@ -25,6 +25,10 @@ k8s 매니페스트는 [k8s-gitops](https://github.com/GGingGGang/k8s-gitops) �
 | GET | `/.well-known/jwks.json` | ES256 공개키 JWK set. `Cache-Control: max-age=3600`. `kid` 는 키의 RFC 7638 JWK thumbprint |
 | GET | `/sessions` | `Authorization: Bearer <access-token>` 필수 → 호출자의 활성 세션(로그인/기기) 목록 |
 | DELETE | `/sessions/{familyId}` | `Authorization: Bearer <access-token>` 필수 → 해당 세션 강제 로그아웃(refresh family 폐기). 소유자 아닌 family_id 는 404 |
+| GET | `/account` | `Authorization: Bearer <access-token>` 필수 → 본인 이메일·표시 이름·시간대 조회 |
+| PATCH | `/account` | 본인 `display_name` 및/또는 `timezone` 수정. 잘못된 값은 400 |
+| POST | `/password/change` | `{current_password, new_password}` 재인증 후 변경, 기존 access/refresh 인증 폐기 |
+| GET | `/introspect` | JWT 서명·계정 상태·`credential_version` 확인. 자격 증명 변경 전 토큰은 401 |
 
 ## OpenAPI
 
@@ -84,6 +88,12 @@ OTEL_EXPORTER_OTLP_PROTOCOL=grpc       # OTLPTraceExporter(grpc) 고정
 
 두 계층 모두 이메일 존재 여부를 흘리지 않도록 미가입 이메일도 동일하게 카운트된다.
 
+## Account and Password Security
+
+계정 프로필은 Bearer access token 으로 호출자 본인만 조회·수정한다. 시간대는 서버의 IANA timezone 데이터로 검증하고, 표시 이름은 앞뒤 공백 제거 후 1~100 Unicode code points 를 허용한다.
+
+비밀번호 변경은 현재 비밀번호를 다시 확인하고 새 비밀번호 12~128 Unicode code points 를 요구한다. MySQL row lock transaction 에서 hash 와 `credential_version` 을 함께 변경한다. 버전은 JWT 의 additive claim 으로 들어가며 기존 JWT/Redis record 에 claim 이 없으면 0 으로 읽는다. `/introspect`, 세션 API, refresh 는 현재 사용자 버전과 맞지 않는 토큰을 거절하므로 Redis family 전체 폐기가 실패해도 이전 자격 증명으로 새 접근·갱신을 얻을 수 없다. 정리 실패는 민감정보 없이 `session_cleanup_failed` 로 기록하고, 다음 세션 목록 조회가 오래된 Redis metadata 를 지운다.
+
 ## Key Rotation
 
 `kid` 는 항상 키 자체에서(RFC 7638 JWK thumbprint) 계산되므로 (`src/keys.ts`), 회전은 PEM 을 바꿔치기하는 것만으로 새 `kid` 가 자동으로 따라온다. `POST /login`·`/refresh` 는 항상 `JWT_PRIVATE_KEY_PEM`(활성 서명 키)으로만 서명하고, `GET /.well-known/jwks.json` 은 이 키의 공개키에 더해 `JWT_SECONDARY_KEY_PEM`(설정된 경우)의 공개키도 함께 노출한다 — 이 두 번째 슬롯은 **절대 서명에 쓰이지 않고 JWKS 공개용으로만** 존재한다 (`src/routes/jwks.ts`).
@@ -103,7 +113,7 @@ OTEL_EXPORTER_OTLP_PROTOCOL=grpc       # OTLPTraceExporter(grpc) 고정
 - **세션 = refresh token family**: 로그인마다 새 family 가 시작되므로(`src/tokens.ts` `issueTokenPair`) family 하나가 사실상 기기/로그인 하나. `auth:session:<family_id>`(`{user_id, created_at, last_active_at}`, family 와 동일한 sliding TTL)에 메타데이터를, `auth:userfam:<user_id>`(Set)에 "이 유저의 family 목록" 역인덱스를 함께 유지한다 — refresh 회전마다 `last_active_at` 만 갱신되고 `created_at`(최초 로그인 시각)은 유지된다.
 - **GET /sessions**: `auth:userfam:<user_id>` 를 순회해 세션 목록을 반환. 인덱스에는 있지만 세션 키가 이미 만료된 항목은 그 자리에서 제거(self-heal).
 - **DELETE /sessions/{familyId}**: `revokeFamily`(기존 `/logout`이 이미 쓰던 함수)를 재사용 — 특정 refresh 토큰 없이도 다른 기기를 지목해 강제 로그아웃할 수 있게 한 것뿐, 폐기 메커니즘 자체는 동일하다. 호출자 소유가 아닌 family_id 는 404(존재 여부 미노출).
-- **한계**: `../PLAN.md` §13 정정 #6 이 `/verify` introspection 을 폐기하고 JWKS 전용 로컬 검증으로 확정했기 때문에, 이미 발급된 access 토큰을 이 API 로 **즉시** 무효화할 방법은 없다 — 강제 로그아웃은 이후 refresh 를 막을 뿐이고, 아직 만료 전인 access 토큰은 `ACCESS_TTL` 만큼 그대로 유효하다(문서상 `auth:blk:<jti>` 블랙리스트 키가 언급돼 있었지만 이 아키텍처 결정과 맞지 않아 구현하지 않았다).
+- **한계**: 세션 강제 로그아웃은 refresh 만 폐기하므로 이미 발급된 access 토큰은 `ACCESS_TTL` 까지 남는다. 비밀번호 변경은 `credential_version` 을 올리고 `/introspect` 가 현재 버전과 대조하므로 Core 의 다음 요청에서 이전 access token 을 거절한다.
 
 `src/accessAuth.test.ts` 가 자체 검증 로직을(주 키/보조 키/서명자 불일치/잘못된 토큰 4케이스) Docker 없이 검증하고, `src/routes/sessions.integration.test.ts` 가 Redis testcontainers 로 목록 스코핑·회전 시 세션 미증식·강제 로그아웃 후 refresh 차단·타인 세션 폐기 시도 404 를 검증한다(MySQL 은 불요 — `issueTokenPair` 를 `/login` 대신 직접 호출해 로그인을 흉내낸다).
 

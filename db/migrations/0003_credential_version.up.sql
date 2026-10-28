@@ -1,0 +1,2 @@
+ALTER TABLE users
+  ADD COLUMN credential_version BIGINT UNSIGNED NOT NULL DEFAULT 0;

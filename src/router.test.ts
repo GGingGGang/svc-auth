@@ -19,9 +19,9 @@ describe("OpenAPI spec", () => {
     const tokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1209600 };
     const userId = "01993d8e-e9d1-7068-9123-000000000001";
     let status = "active";
-    const query = vi.fn(async () => [[{ status }], []]);
+    const query = vi.fn(async (sql: string) => [sql.includes("credential_version") && status === "active" ? [{ credential_version: 0 }] : [], []]);
     const evalCommand = vi.fn().mockResolvedValue(1);
-    const get = vi.fn().mockResolvedValue(JSON.stringify({ user_id: userId, family_id: "family-1", consumed: false }));
+    const get = vi.fn().mockResolvedValue(JSON.stringify({ user_id: userId, family_id: "family-1", consumed: false, credential_version: 0 }));
     const app = buildApp({
       pool: { query } as unknown as Pool,
       redis: { eval: evalCommand, get } as unknown as Redis,
@@ -55,9 +55,9 @@ describe("OpenAPI spec", () => {
     const userId = "01993d8e-e9d1-7068-9123-000000000002";
     const tokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1209600 };
     const query = vi.fn().mockRejectedValueOnce(new Error("temporary database outage"))
-      .mockResolvedValue([[{ status: "active" }], []]);
-    const get = vi.fn().mockResolvedValue(JSON.stringify({ user_id: userId, family_id: "family-2", consumed: false }));
-    const evalCommand = vi.fn().mockResolvedValue([1, userId]);
+      .mockResolvedValue([[{ credential_version: 0 }], []]);
+    const get = vi.fn().mockResolvedValue(JSON.stringify({ user_id: userId, family_id: "family-2", consumed: false, credential_version: 0 }));
+    const evalCommand = vi.fn().mockResolvedValue([1, userId, 0]);
     const app = buildApp({ pool: { query } as unknown as Pool,
       redis: { get, eval: evalCommand } as unknown as Redis, signingKey, tokenEnv });
     await app.ready();
@@ -67,6 +67,31 @@ describe("OpenAPI spec", () => {
     expect(evalCommand).not.toHaveBeenCalled();
     expect((await app.inject({ method: "POST", url: "/refresh", payload })).statusCode).toBe(200);
     expect(evalCommand).toHaveBeenCalledTimes(1);
+    await app.close();
+  });
+
+  it("rejects old access and refresh credentials after a version change", async () => {
+    const signingKey = await generateTestSigningKey();
+    const userId = "01993d8e-e9d1-7068-9123-000000000003";
+    const tokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1209600 };
+    const query = vi.fn(async () => [[{ credential_version: 1 }], []]);
+    const evalCommand = vi.fn().mockResolvedValue(1);
+    const get = vi.fn().mockResolvedValue(JSON.stringify({
+      user_id: userId, family_id: "old-family", consumed: false, credential_version: 0,
+    }));
+    const app = buildApp({ pool: { query } as unknown as Pool,
+      redis: { get, eval: evalCommand } as unknown as Redis, signingKey, tokenEnv });
+    await app.ready();
+    const oldToken = (await signAccessToken(userId, signingKey, tokenEnv, 0)).token;
+    const newToken = (await signAccessToken(userId, signingKey, tokenEnv, 1)).token;
+    const oldAuth = { authorization: `Bearer ${oldToken}` };
+
+    expect((await app.inject({ method: "GET", url: "/introspect", headers: oldAuth })).statusCode).toBe(401);
+    expect((await app.inject({ method: "GET", url: "/sessions", headers: oldAuth })).statusCode).toBe(401);
+    const refresh = await app.inject({ method: "POST", url: "/refresh", payload: { refresh_token: "old-refresh" } });
+    expect(refresh.statusCode).toBe(401);
+    expect(evalCommand).toHaveBeenCalledOnce();
+    expect((await app.inject({ method: "GET", url: "/introspect", headers: { authorization: `Bearer ${newToken}` } })).statusCode).toBe(200);
     await app.close();
   });
 
@@ -167,11 +192,13 @@ describe("OpenAPI spec", () => {
     expect(spec.openapi).toBe("3.0.0");
     expect(Object.keys(spec.paths).sort()).toEqual([
       "/.well-known/jwks.json",
+      "/account",
       "/healthz",
       "/introspect",
       "/login",
       "/logout",
       "/metrics",
+      "/password/change",
       "/readyz",
       "/refresh",
       "/register",

@@ -6,14 +6,14 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import type { SigningKey } from "../keys.js";
 import { buildApp } from "../router.js";
 import { generateTestSigningKey } from "../test-support/signing-key.js";
-import { issueTokenPair, rotateRefreshToken, signAccessToken, type TokenEnv } from "../tokens.js";
+import { issueTokenPair, listSessions, refreshTokenOwner, revokeSessionForUser, rotateRefreshToken, signAccessToken, type TokenEnv } from "../tokens.js";
 
 // Sessions routes never touch the DB — pool.() is never called by anything
 // this test exercises, matching router.test.ts's stub pattern. Real logins
 // are simulated with issueTokenPair() directly rather than going through
 // /login, which would need a real users row (MySQL) this test has no
 // reason to stand up.
-const stubPool = { query: async () => [[{ status: "active" }], []] } as unknown as Pool;
+const stubPool = { query: async () => [[{ credential_version: 0 }], []] } as unknown as Pool;
 const tokenEnv: TokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1_209_600 };
 
 describe("session management (GET/DELETE /sessions)", () => {
@@ -143,5 +143,22 @@ describe("session management (GET/DELETE /sessions)", () => {
     // still usable — the attacker's failed attempt must not have revoked it.
     const stillValid = await rotateRefreshToken({ redis, signingKey, tokenEnv, refreshToken: pair.refreshToken });
     expect(stillValid.ok).toBe(true);
+  });
+
+  it("prunes stale-version sessions without deleting a newer login created during cleanup", async () => {
+    const userId = "user-versioned";
+    const stale = await issueTokenPair({ redis, signingKey, tokenEnv, userId, credentialVersion: 0 });
+    const current = await issueTokenPair({ redis, signingKey, tokenEnv, userId, credentialVersion: 1 });
+
+    const oldView = await listSessions(redis, userId, 0);
+    expect(oldView).toHaveLength(1); // a concurrent old request cannot see the newer family id
+    const currentOwner = await refreshTokenOwner(redis, current.refreshToken);
+    expect(currentOwner).not.toBeNull();
+    expect(await revokeSessionForUser(redis, userId, currentOwner!.familyId, 0)).toBe(false);
+
+    const sessions = await listSessions(redis, userId, 1);
+    expect(sessions).toHaveLength(1);
+    expect((await rotateRefreshToken({ redis, signingKey, tokenEnv, refreshToken: stale.refreshToken })).ok).toBe(false);
+    expect((await rotateRefreshToken({ redis, signingKey, tokenEnv, refreshToken: current.refreshToken })).ok).toBe(true);
   });
 });

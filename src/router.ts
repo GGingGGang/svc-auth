@@ -18,6 +18,8 @@ import { logoutRoutes } from "./routes/logout.js";
 import { refreshRoutes } from "./routes/refresh.js";
 import { registerRoutes } from "./routes/register.js";
 import { sessionsRoutes } from "./routes/sessions.js";
+import { accountRoutes } from "./routes/account.js";
+import { passwordRoutes } from "./routes/password.js";
 import { loadTokenEnv, type TokenEnv } from "./tokens.js";
 
 const okResponseSchema = {
@@ -125,6 +127,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
     app.register(jwksRoutes, { signingKey, secondaryKey });
     app.register(introspectRoutes, { pool, signingKey, secondaryKey, tokenEnv });
     app.register(sessionsRoutes, { pool, redis, signingKey, secondaryKey, tokenEnv });
+    app.register(accountRoutes, { pool, signingKey, secondaryKey, tokenEnv });
+    app.register(passwordRoutes, { pool, redis, signingKey, secondaryKey, tokenEnv, loginSecurityEnv });
   });
 
   return app;

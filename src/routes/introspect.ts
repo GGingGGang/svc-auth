@@ -1,8 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import type { Pool } from "mysql2/promise";
 
-import { verifyOwnAccessToken } from "../accessAuth.js";
-import { isActiveUser } from "../accountStatus.js";
+import { verifyOwnAccessTokenClaims } from "../accessAuth.js";
+import { activeCredentialVersion } from "../accountStatus.js";
 import type { SigningKey } from "../keys.js";
 import { loadTokenEnv, type TokenEnv } from "../tokens.js";
 
@@ -28,13 +28,13 @@ export async function introspectRoutes(app: FastifyInstance, opts: IntrospectRou
     reply.header("Cache-Control", "no-store");
     const header = req.headers.authorization;
     const token = header?.startsWith("Bearer ") ? header.slice(7) : undefined;
-    const userId = token ? await verifyOwnAccessToken(token, opts.signingKey, opts.secondaryKey, tokenEnv) : null;
-    if (!userId) {
+    const claims = token ? await verifyOwnAccessTokenClaims(token, opts.signingKey, opts.secondaryKey, tokenEnv) : null;
+    if (!claims) {
       return reply.code(401).send({ error: "unauthorized" });
     }
     let active: boolean;
     try {
-      active = await isActiveUser(opts.pool, userId);
+      active = (await activeCredentialVersion(opts.pool, claims.userId)) === claims.credentialVersion;
     } catch {
       return reply.code(503).send({ error: "unavailable" });
     }

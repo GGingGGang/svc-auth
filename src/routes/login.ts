@@ -43,6 +43,7 @@ interface UserRow {
   login_failures: number;
   login_locked: number;
   failure_window_expired: number;
+  credential_version: number | string;
 }
 
 export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions): Promise<void> {
@@ -79,10 +80,11 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
       // Serialize verification and count/reset against every concurrent login for this account.
       const conn = await pool.getConnection();
       let userId: string;
+      let credentialVersion: number;
       try {
         await conn.beginTransaction();
         const [rows] = await conn.query(
-          `SELECT id, password_hash, status, login_failures,
+          `SELECT id, password_hash, status, login_failures, credential_version,
                   login_locked_until > UTC_TIMESTAMP(3) AS login_locked,
                   login_failure_window_started_at IS NULL OR
                     login_failure_window_started_at <= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? SECOND) OR
@@ -124,14 +126,15 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
           [row.id],
         );
         await conn.commit();
-        userId = UUID.ofInner(row.id).toString();
+      userId = UUID.ofInner(row.id).toString();
+      credentialVersion = Number(row.credential_version);
       } catch (err) {
         await conn.rollback();
         throw err;
       } finally {
         conn.release();
       }
-      const pair = await issueTokenPair({ redis, signingKey, tokenEnv, userId });
+      const pair = await issueTokenPair({ redis, signingKey, tokenEnv, userId, credentialVersion });
 
       return reply.code(200).send({
         access_token: pair.accessToken,

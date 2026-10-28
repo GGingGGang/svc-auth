@@ -63,14 +63,34 @@ export async function checkLoginRateLimit(
   ip: string,
   email: string,
 ): Promise<RateLimitResult> {
-  const byIp = await hitWindow(redis, `auth:loginrl:ip:${ip}`, env.rateLimitIpMax, env.rateLimitIpWindowSeconds);
+  return checkScopedRateLimit(redis, env, ip, email, "loginrl", "email");
+}
+
+export async function checkPasswordChangeRateLimit(
+  redis: Redis,
+  env: LoginSecurityEnv,
+  ip: string,
+  userId: string,
+): Promise<RateLimitResult> {
+  return checkScopedRateLimit(redis, env, ip, userId, "pwchangerl", "user");
+}
+
+async function checkScopedRateLimit(
+  redis: Redis,
+  env: LoginSecurityEnv,
+  ip: string,
+  subject: string,
+  namespace: "loginrl" | "pwchangerl",
+  label: "email" | "user",
+): Promise<RateLimitResult> {
+  const byIp = await hitWindow(redis, `auth:${namespace}:ip:${ip}`, env.rateLimitIpMax, env.rateLimitIpWindowSeconds);
   if (byIp.limited) {
     return byIp;
   }
 
   return hitWindow(
     redis,
-    `auth:loginrl:email:${hashEmail(email)}`,
+    `auth:${namespace}:${label}:${hashEmail(subject)}`,
     env.rateLimitEmailMax,
     env.rateLimitEmailWindowSeconds,
   );

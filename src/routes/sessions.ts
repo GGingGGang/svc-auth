@@ -2,8 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Redis } from "ioredis";
 import type { Pool } from "mysql2/promise";
 
-import { isActiveUser } from "../accountStatus.js";
-import { verifyOwnAccessToken } from "../accessAuth.js";
+import { activeCredentialVersion } from "../accountStatus.js";
+import { verifyOwnAccessTokenClaims } from "../accessAuth.js";
 import type { SigningKey } from "../keys.js";
 import { listSessions, loadTokenEnv, revokeSessionForUser, type TokenEnv } from "../tokens.js";
 import { errorResponseSchema } from "./schemas.js";
@@ -32,15 +32,16 @@ export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOp
 
   // Shared bearer-token check for both routes below. Replies 401 itself (so
   // callers can just early-return) and returns the authenticated user id.
-  async function authenticate(req: FastifyRequest, reply: FastifyReply): Promise<string | undefined> {
+  async function authenticate(req: FastifyRequest, reply: FastifyReply): Promise<{ userId: string; credentialVersion: number } | undefined> {
     const header = req.headers.authorization;
     const token = header?.startsWith("Bearer ") ? header.slice("Bearer ".length) : undefined;
-    const userId = token ? await verifyOwnAccessToken(token, signingKey, secondaryKey, tokenEnv) : null;
-    if (!userId || !await isActiveUser(pool, userId)) {
+    const claims = token ? await verifyOwnAccessTokenClaims(token, signingKey, secondaryKey, tokenEnv) : null;
+    const version = claims ? await activeCredentialVersion(pool, claims.userId) : null;
+    if (!claims || version !== claims.credentialVersion) {
       await reply.code(401).send({ error: "unauthorized" });
       return undefined;
     }
-    return userId;
+    return { userId: claims.userId, credentialVersion: claims.credentialVersion };
   }
 
   app.get(
@@ -62,9 +63,9 @@ export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOp
       },
     },
     async (req, reply) => {
-      const userId = await authenticate(req, reply);
-      if (!userId) return;
-      const sessions = await listSessions(redis, userId);
+      const identity = await authenticate(req, reply);
+      if (!identity) return;
+      const sessions = await listSessions(redis, identity.userId, identity.credentialVersion);
       return reply.code(200).send({ sessions });
     },
   );
@@ -92,9 +93,9 @@ export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOp
       },
     },
     async (req, reply) => {
-      const userId = await authenticate(req, reply);
-      if (!userId) return;
-      const revoked = await revokeSessionForUser(redis, userId, req.params.familyId);
+      const identity = await authenticate(req, reply);
+      if (!identity) return;
+      const revoked = await revokeSessionForUser(redis, identity.userId, req.params.familyId, identity.credentialVersion);
       if (!revoked) {
         return reply.code(404).send({ error: "not_found" });
       }

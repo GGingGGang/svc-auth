@@ -32,6 +32,7 @@ interface RefreshRecord {
   family_id: string;
   issued_at: string;
   consumed: boolean;
+  credential_version: number;
 }
 
 // SessionRecord is the 5M session-management addition (../PLAN.md §7 "세션
@@ -42,6 +43,7 @@ interface SessionRecord {
   user_id: string;
   created_at: string; // first login that started this family — never changes across rotations
   last_active_at: string; // bumped on every rotation
+  credential_version: number;
 }
 
 export interface SessionSummary {
@@ -77,11 +79,12 @@ export async function signAccessToken(
   userId: string,
   signingKey: SigningKey,
   tokenEnv: TokenEnv,
+  credentialVersion = 0,
 ): Promise<{ token: string; expiresIn: number }> {
   const now = Math.floor(Date.now() / 1000);
   const exp = now + tokenEnv.accessTtlSeconds;
 
-  const token = await new SignJWT({ scope: ACCESS_SCOPE })
+  const token = await new SignJWT({ scope: ACCESS_SCOPE, credential_version: credentialVersion })
     .setProtectedHeader({ alg: "ES256", kid: signingKey.kid })
     .setIssuer(tokenEnv.issuer)
     .setSubject(userId)
@@ -117,6 +120,7 @@ async function touchSession(
   now: string,
   isNewFamily: boolean,
   ttlSeconds: number,
+  credentialVersion: number,
 ): Promise<void> {
   let createdAt = now;
   if (!isNewFamily) {
@@ -125,7 +129,7 @@ async function touchSession(
       createdAt = (JSON.parse(raw) as SessionRecord).created_at;
     }
   }
-  const session: SessionRecord = { user_id: userId, created_at: createdAt, last_active_at: now };
+  const session: SessionRecord = { user_id: userId, created_at: createdAt, last_active_at: now, credential_version: credentialVersion };
   await redis.set(sessionKey(familyId), JSON.stringify(session), "EX", ttlSeconds);
   await redis.sadd(userFamKey(userId), familyId);
   await redis.expire(userFamKey(userId), ttlSeconds);
@@ -137,23 +141,25 @@ export interface IssueTokenPairParams {
   tokenEnv: TokenEnv;
   userId: string;
   familyId?: string;
+  credentialVersion?: number;
 }
 
 // Fresh login starts a new family; rotation (rotateRefreshToken below) reuses
 // the caller's familyId so every descendant token stays revocable as a unit.
 export async function issueTokenPair(params: IssueTokenPairParams): Promise<TokenPair> {
   const { redis, signingKey, tokenEnv, userId } = params;
+  const credentialVersion = params.credentialVersion ?? 0;
   const isNewFamily = params.familyId === undefined;
   const familyId = params.familyId ?? randomUUID();
   const refreshToken = randomBytes(32).toString("base64url");
   const hash = hashToken(refreshToken);
   const now = new Date().toISOString();
 
-  const record: RefreshRecord = { user_id: userId, family_id: familyId, issued_at: now, consumed: false };
+  const record: RefreshRecord = { user_id: userId, family_id: familyId, issued_at: now, consumed: false, credential_version: credentialVersion };
   await storeRefreshToken(redis, record, hash, tokenEnv.refreshTtlSeconds);
-  await touchSession(redis, familyId, userId, now, isNewFamily, tokenEnv.refreshTtlSeconds);
+  await touchSession(redis, familyId, userId, now, isNewFamily, tokenEnv.refreshTtlSeconds, credentialVersion);
 
-  const access = await signAccessToken(userId, signingKey, tokenEnv);
+  const access = await signAccessToken(userId, signingKey, tokenEnv, credentialVersion);
   return { accessToken: access.token, refreshToken, expiresIn: access.expiresIn };
 }
 
@@ -168,11 +174,13 @@ export interface RotateRefreshTokenParams {
   refreshToken: string;
 }
 
-export async function refreshTokenOwner(redis: Redis, refreshToken: string): Promise<{ userId: string; familyId: string } | null> {
+export async function refreshTokenOwner(redis: Redis, refreshToken: string): Promise<{ userId: string; familyId: string; credentialVersion: number } | null> {
   const raw = await redis.get(refreshKey(hashToken(refreshToken)));
   if (!raw) return null;
   const record = JSON.parse(raw) as RefreshRecord;
-  return { userId: record.user_id, familyId: record.family_id };
+  const credentialVersion = record.credential_version ?? 0;
+  if (!Number.isSafeInteger(credentialVersion) || credentialVersion < 0) return null;
+  return { userId: record.user_id, familyId: record.family_id, credentialVersion };
 }
 
 // Consume and issue in one Redis turn: a concurrent reuse cannot revoke the
@@ -181,6 +189,9 @@ const ROTATE_LUA = `
 local raw = redis.call('GET', KEYS[1])
 if not raw then return {0} end
 local record = cjson.decode(raw)
+local credentialVersion = record.credential_version
+if credentialVersion == nil then credentialVersion = 0 end
+if type(credentialVersion) ~= 'number' or credentialVersion < 0 or credentialVersion % 1 ~= 0 or credentialVersion > 9007199254740991 then return {0} end
 local family = 'auth:rtfam:' .. record.family_id
 local session = 'auth:session:' .. record.family_id
 local index = 'auth:userfam:' .. record.user_id
@@ -195,15 +206,15 @@ if record.consumed then
 end
 record.consumed = true
 redis.call('SET', KEYS[1], cjson.encode(record), 'KEEPTTL')
-redis.call('SET', KEYS[2], cjson.encode({user_id=record.user_id, family_id=record.family_id, issued_at=ARGV[3], consumed=false}), 'EX', ARGV[2])
+redis.call('SET', KEYS[2], cjson.encode({user_id=record.user_id, family_id=record.family_id, issued_at=ARGV[3], consumed=false, credential_version=credentialVersion}), 'EX', ARGV[2])
 redis.call('SADD', family, ARGV[4])
 redis.call('EXPIRE', family, ARGV[2])
 local sessionRaw = redis.call('GET', session)
 local createdAt = sessionRaw and cjson.decode(sessionRaw).created_at or ARGV[3]
-redis.call('SET', session, cjson.encode({user_id=record.user_id, created_at=createdAt, last_active_at=ARGV[3]}), 'EX', ARGV[2])
+redis.call('SET', session, cjson.encode({user_id=record.user_id, created_at=createdAt, last_active_at=ARGV[3], credential_version=credentialVersion}), 'EX', ARGV[2])
 redis.call('SADD', index, record.family_id)
 redis.call('EXPIRE', index, ARGV[2])
-return {1, record.user_id}
+return {1, record.user_id, credentialVersion}
 `;
 
 // One-time use: the record is marked consumed (not deleted outright) so a
@@ -218,11 +229,12 @@ export async function rotateRefreshToken(params: RotateRefreshTokenParams): Prom
   const result = await redis.eval(
     ROTATE_LUA, 2, refreshKey(hash), refreshKey(nextHash),
     hash, tokenEnv.refreshTtlSeconds, new Date().toISOString(), nextHash,
-  ) as [number, string?];
+  ) as [number, string?, number?];
   if (result[0] !== 1) {
     return { ok: false, reason: result[0] === 2 ? "reuse_detected" : "invalid" };
   }
-  const access = await signAccessToken(result[1]!, signingKey, tokenEnv);
+  const credentialVersion = result[2] ?? 0;
+  const access = await signAccessToken(result[1]!, signingKey, tokenEnv, credentialVersion);
   return { ok: true, pair: { accessToken: access.token, refreshToken: nextToken, expiresIn: access.expiresIn } };
 }
 
@@ -254,7 +266,7 @@ export async function logoutByRefreshToken(redis: Redis, refreshToken: string): 
 // 목록") — one entry per active login ("device"). A family_id present in
 // the reverse index whose session key already expired (TTL raced ahead of
 // an unused login) is dropped and the stale index entry self-heals away.
-export async function listSessions(redis: Redis, userId: string): Promise<SessionSummary[]> {
+export async function listSessions(redis: Redis, userId: string, credentialVersion = 0): Promise<SessionSummary[]> {
   const familyIds = await redis.smembers(userFamKey(userId));
   const sessions: SessionSummary[] = [];
   for (const familyId of familyIds) {
@@ -264,18 +276,65 @@ export async function listSessions(redis: Redis, userId: string): Promise<Sessio
       continue;
     }
     const session = JSON.parse(raw) as SessionRecord;
+    const sessionVersion = session.credential_version ?? 0;
+    if (!Number.isSafeInteger(sessionVersion) || sessionVersion < credentialVersion) {
+      await revokeFamily(redis, familyId);
+      continue;
+    }
+    if (sessionVersion > credentialVersion) continue;
     sessions.push({ family_id: familyId, created_at: session.created_at, last_active_at: session.last_active_at });
   }
   return sessions.sort((a, b) => b.last_active_at.localeCompare(a.last_active_at));
+}
+
+export async function revokeSessionsBeforeVersion(redis: Redis, userId: string, credentialVersion: number): Promise<number> {
+  return Number(await redis.eval(`
+    local families = redis.call('SMEMBERS', KEYS[1])
+    local revoked = 0
+    for _, familyId in ipairs(families) do
+      local sessionKey = 'auth:session:' .. familyId
+      local rawSession = redis.call('GET', sessionKey)
+      local sessionVersion = 0
+      if rawSession then
+        local session = cjson.decode(rawSession)
+        sessionVersion = session.credential_version or 0
+      end
+      if not rawSession or type(sessionVersion) ~= 'number' or sessionVersion < tonumber(ARGV[1]) then
+      local family = 'auth:rtfam:' .. familyId
+      for _, member in ipairs(redis.call('SMEMBERS', family)) do
+        redis.call('DEL', 'auth:refresh:' .. member)
+      end
+      redis.call('DEL', family, sessionKey)
+      redis.call('SREM', KEYS[1], familyId)
+      revoked = revoked + 1
+      end
+    end
+    return revoked
+  `, 1, userFamKey(userId), credentialVersion));
 }
 
 // revokeSessionForUser backs DELETE /sessions/:familyId ("개별 폐기" /
 // force logout). Ownership is checked via the reverse index before
 // revoking — a familyId that exists but belongs to someone else returns
 // false so the route can 404 without leaking whether the id exists at all.
-export async function revokeSessionForUser(redis: Redis, userId: string, familyId: string): Promise<boolean> {
-  const isMember = await redis.sismember(userFamKey(userId), familyId);
-  if (!isMember) return false;
-  await revokeFamily(redis, familyId);
-  return true;
+export async function revokeSessionForUser(
+  redis: Redis,
+  userId: string,
+  familyId: string,
+  credentialVersion = 0,
+): Promise<boolean> {
+  const revoked = await redis.eval(`
+    local rawSession = redis.call('GET', KEYS[2])
+    if not rawSession then return 0 end
+    local session = cjson.decode(rawSession)
+    local version = session.credential_version or 0
+    if session.user_id ~= ARGV[1] or type(version) ~= 'number' or version ~= tonumber(ARGV[3]) then return 0 end
+    for _, member in ipairs(redis.call('SMEMBERS', KEYS[1])) do
+      redis.call('DEL', 'auth:refresh:' .. member)
+    end
+    redis.call('DEL', KEYS[1], KEYS[2])
+    redis.call('SREM', KEYS[3], ARGV[2])
+    return 1
+  `, 3, familyKey(familyId), sessionKey(familyId), userFamKey(userId), userId, familyId, credentialVersion);
+  return Number(revoked) === 1;
 }

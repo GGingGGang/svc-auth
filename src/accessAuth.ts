@@ -19,6 +19,20 @@ export async function verifyOwnAccessToken(
   secondaryKey: SigningKey | undefined,
   tokenEnv: TokenEnv,
 ): Promise<string | null> {
+  return (await verifyOwnAccessTokenClaims(token, signingKey, secondaryKey, tokenEnv))?.userId ?? null;
+}
+
+export interface OwnAccessClaims {
+  userId: string;
+  credentialVersion: number;
+}
+
+export async function verifyOwnAccessTokenClaims(
+  token: string,
+  signingKey: SigningKey,
+  secondaryKey: SigningKey | undefined,
+  tokenEnv: TokenEnv,
+): Promise<OwnAccessClaims | null> {
   const candidates = secondaryKey ? [signingKey, secondaryKey] : [signingKey];
 
   for (const key of candidates) {
@@ -26,7 +40,10 @@ export async function verifyOwnAccessToken(
       const publicKey = await importJWK(key.publicJwk as JWK, "ES256");
       const { payload } = await jwtVerify(token, publicKey, { issuer: tokenEnv.issuer });
       if (typeof payload.sub === "string" && payload.sub.length > 0) {
-        return payload.sub;
+        const version = payload.credential_version ?? 0;
+        if (Number.isSafeInteger(version) && typeof version === "number" && version >= 0) {
+          return { userId: payload.sub, credentialVersion: version };
+        }
       }
     } catch {
       // try the next candidate key; if none verify, fall through to null below.

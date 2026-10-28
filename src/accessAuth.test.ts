@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { verifyOwnAccessToken } from "./accessAuth.js";
+import { verifyOwnAccessToken, verifyOwnAccessTokenClaims } from "./accessAuth.js";
 import { generateTestSigningKey } from "./test-support/signing-key.js";
 import { signAccessToken } from "./tokens.js";
 import type { TokenEnv } from "./tokens.js";
@@ -13,6 +13,17 @@ describe("verifyOwnAccessToken", () => {
     const { token } = await signAccessToken("user-1", signingKey, tokenEnv);
 
     await expect(verifyOwnAccessToken(token, signingKey, undefined, tokenEnv)).resolves.toBe("user-1");
+  });
+
+  it("treats pre-version tokens as version zero and preserves an explicit version", async () => {
+    const signingKey = await generateTestSigningKey();
+    const legacy = (await signAccessToken("user-legacy", signingKey, tokenEnv)).token;
+    const updated = (await signAccessToken("user-updated", signingKey, tokenEnv, 7)).token;
+
+    await expect(verifyOwnAccessTokenClaims(legacy, signingKey, undefined, tokenEnv))
+      .resolves.toEqual({ userId: "user-legacy", credentialVersion: 0 });
+    await expect(verifyOwnAccessTokenClaims(updated, signingKey, undefined, tokenEnv))
+      .resolves.toEqual({ userId: "user-updated", credentialVersion: 7 });
   });
 
   it("also accepts a token signed with the secondary key (rotation window)", async () => {
