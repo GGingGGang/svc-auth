@@ -67,3 +67,10 @@ root에 다음 additive 계약안을 전달했고 root가 전체 `PLAN.md`의 �
 - auth의 DB outbox는 동일 event ID로 재발행하며 완료 ACK를 서비스별 DB 상태에 반영한다. `retry` ACK는 즉시 재발행을 예약한다. 3개 서비스 완료 후 세션 폐기 및 사용자 hard delete를 수행하고 receipt 상태를 `completed`로 바꾼 뒤 outbox를 제거한다. DB/Redis 처리 실패 시 JetStream ACK 전에 NAK되어 재전달된다. receipt 원문은 `X-Deletion-Receipt`로만 받으며 DB에는 해시만 저장한다.
 - 대조 중 발견한 결함을 수정했다. auth가 시작될 때 stream/durable 조회에 실패하면 결과 consumer가 영구 종료되던 동작을 supervised retry로 바꿨다. 연결이 닫힌 경우 재연결하고, provisioning 전/일시 장애는 5초 간격으로 다시 조회한다. stream/durable은 계속 외부 운영 설정으로 관리하며 auth가 만들지 않는다. 발행 및 consumer 장애는 payload/URL을 포함하지 않는 코드형 로그를 분당 한 번 남긴다.
 - `npm test`: 13개 파일, 43개 테스트 통과(삭제 ACK 계약 검증과 consumer 재획득 회귀 포함). `npm run build`, `npx tsc --noEmit`, `git diff --check` 통과. 실 NATS/DB 종단 간 재전달은 Docker/NATS 환경 부재로 미실행이며 운영 stream ACL, consumer provisioning, ingress 노출 여부 및 backup retention/compliance 확인은 여전히 운영 확인 항목이다. SMTP 및 Telegram 발송 설정은 변경하지 않았고 전송도 하지 않았다.
+
+### 2026-10-29 MySQL lifecycle 통합 회귀 추가
+
+- 기존 Testcontainers harness 방식으로 `src/routes/lifecycle.integration.test.ts`에 세 시나리오를 추가했다: 실제 MySQL 동시 이메일 확인 토큰 1회 소모, 비밀번호 재설정 후 DB상 토큰 제거 및 credential version 증가/이전 비밀번호 거부, 서비스별 완료 ACK 전에는 계정이 남고 마지막 ACK 뒤 hard-delete 및 receipt 완료. 마지막 service ACK 중복 동시 도착도 검증한다. 삭제 ACK 처리 테스트는 실제 MySQL/Redis를 쓰며 NATS consumer를 가짜로 대체하지 않고 `acceptResult`를 직접 호출한다.
+- SMTP 환경은 테스트용 로컬 URL만 설정하고 메일 worker를 시작하지 않는다. 확인/재설정 token은 DB의 암호화된 outbox에서 테스트 key로 복호화하며 실제 SMTP 접속/메일 전송은 없다.
+- `npm test`: 13개 파일, 43개 단위 테스트 통과. `npm run build`, `npx tsc --noEmit`, `git diff --check` 통과. `npm run test:integration -- --run src/routes/lifecycle.integration.test.ts`는 Testcontainers가 쓸 container runtime을 찾지 못해 시작 단계에서 실패했고, 세 통합 시나리오는 실행되지 않았다. Docker가 사용 가능한 CI에서 해당 명령으로 확인해야 한다.
+- 추가로 deletion publish 실패 후 lease 해제하던 경로가 오류를 삼켜 경고 logger에 도달하지 않던 문제를 고쳤다. lease 해제 후 오류를 다시 던져 안전한 코드형 경고가 남으며, 이벤트 payload와 접속 정보를 로그에 포함하지 않는다.

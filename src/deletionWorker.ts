@@ -64,8 +64,9 @@ async function publishPending(pool: Pool, js: ReturnType<typeof jetstream>): Pro
     const event = { event_id: row.event_id, request_id: row.request_id, user_id: userId, credential_version: Number(row.credential_version), occurred_at: new Date().toISOString() };
     await js.publish("app.account.deletion_requested.v1", encoder.encode(JSON.stringify(event)), { msgID: row.event_id });
     await pool.execute("UPDATE account_deletion_outbox SET published_at=UTC_TIMESTAMP(3),lease_until=NULL WHERE event_id=?", [row.event_id]);
-  } catch {
+  } catch (err) {
     await pool.execute("UPDATE account_deletion_outbox SET lease_until=NULL WHERE event_id=?", [row.event_id]);
+    throw err;
   }
 }
 
