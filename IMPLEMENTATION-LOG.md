@@ -12,7 +12,7 @@
 
 - `npx tsc --noEmit` — 통과.
 - `npm test` — 9개 파일, 33개 테스트 통과. credential version 전후 access/refresh 차단, Redis 정리 실패 후에도 차단, 로그인/비밀번호 변경 경합에서 오래된 버전 차단, 새 버전 보존, 비밀번호 재인증·정책·rate-limit, 프로필 필드 검증을 확인했다.
-- `npm run test:integration` — Docker가 제공되지 않는 환경이라 실행하지 않았다. Testcontainers 기반 실제 MySQL/Redis 시나리오와 migration 적용은 CI에서 확인해야 한다.
+- 로컬 환경에는 Docker가 없어 Testcontainers를 실행할 수 없다. 이후 CI의 실제 실행 결과는 아래 2026-10-29 CI 항목에 기록했다.
 
 ## 남은 요구사항
 
@@ -54,7 +54,7 @@ root에 다음 additive 계약안을 전달했고 root가 전체 `PLAN.md`의 �
 
 - `npm test`: 12개 테스트 파일, 41개 테스트 통과. 암호화 payload tamper 검출, fake SMTP transport에서 fragment 링크 사용, 공개 가입 fail-closed, 내부 bearer/actor 인증, 미확인 탈퇴 확인, reset 토큰 단일 사용/버전 증가, 고정 metric 라벨을 검사했다. 기존 세션 통합 테스트에 sid 기반 현재 세션/기타 세션 폐기와 sid 없는 JWT 거절도 추가했다.
 - `npm run build` 및 `npx tsc --noEmit`: 통과.
-- Testcontainers 통합 테스트는 이 환경에 Docker daemon이 없어 실행하지 않았다. MySQL migration의 실제 적용/JetStream 서비스 ACK 및 실제 SMTP 전송은 실환경 설정 후 확인해야 한다. 테스트에서는 실제 이메일을 보내지 않았다.
+- Testcontainers MySQL/Redis 통합 테스트는 아래 성공한 CI에서 실행됐다. 실제 SMTP 발송과 실제 NATS·타 서비스 간 삭제 ACK/ACL 검증은 설정되지 않아 여전히 미검증이며, 테스트는 외부 이메일을 보내지 않았다.
 
 ### 남은 외부 운영 확인
 
@@ -72,5 +72,5 @@ root에 다음 additive 계약안을 전달했고 root가 전체 `PLAN.md`의 �
 
 - 기존 Testcontainers harness 방식으로 `src/routes/lifecycle.integration.test.ts`에 세 시나리오를 추가했다: 실제 MySQL 동시 이메일 확인 토큰 1회 소모, 비밀번호 재설정 후 DB상 토큰 제거 및 credential version 증가/이전 비밀번호 거부, 서비스별 완료 ACK 전에는 계정이 남고 마지막 ACK 뒤 hard-delete 및 receipt 완료. 마지막 service ACK 중복 동시 도착도 검증한다. 삭제 ACK 처리 테스트는 실제 MySQL/Redis를 쓰며 NATS consumer를 가짜로 대체하지 않고 `acceptResult`를 직접 호출한다.
 - SMTP 환경은 테스트용 로컬 URL만 설정하고 메일 worker를 시작하지 않는다. 확인/재설정 token은 DB의 암호화된 outbox에서 테스트 key로 복호화하며 실제 SMTP 접속/메일 전송은 없다.
-- `npm test`: 13개 파일, 43개 단위 테스트 통과. `npm run build`, `npx tsc --noEmit`, `git diff --check` 통과. `npm run test:integration -- --run src/routes/lifecycle.integration.test.ts`는 Testcontainers가 쓸 container runtime을 찾지 못해 시작 단계에서 실패했고, 세 통합 시나리오는 실행되지 않았다. Docker가 사용 가능한 CI에서 해당 명령으로 확인해야 한다.
+- 로컬에서는 Testcontainers runtime 부재로 통합 suite를 실행하지 못했으나, 이후 [CI run 40834522751](https://github.com/GGingGGang/svc-auth/actions/runs/40834522751) / [job 123316076080](https://github.com/GGingGGang/svc-auth/actions/runs/40834522751/job/123316076080)이 SUCCESS로 완료됐다: 단위 테스트 13 files/43 tests, 통합 테스트 5 files/35 tests(이 lifecycle 통합 시나리오 3개 포함). 이에 따라 이전 로컬 미실행 caveat은 MySQL/Redis 통합 테스트 상태로는 대체됐다. `npm run build`, `npx tsc --noEmit`, strict integration-test typecheck, `git diff --check`도 통과했다.
 - 추가로 deletion publish 실패 후 lease 해제하던 경로가 오류를 삼켜 경고 logger에 도달하지 않던 문제를 고쳤다. lease 해제 후 오류를 다시 던져 안전한 코드형 경고가 남으며, 이벤트 payload와 접속 정보를 로그에 포함하지 않는다.
