@@ -145,6 +145,31 @@ describe("session management (GET/DELETE /sessions)", () => {
     expect(stillValid.ok).toBe(true);
   });
 
+  it("marks the JWT sid as current and revokes only other sessions", async () => {
+    const userId = "user-current";
+    const current = await issueTokenPair({ redis, signingKey, tokenEnv, userId });
+    const other = await issueTokenPair({ redis, signingKey, tokenEnv, userId });
+    const currentOwner = await refreshTokenOwner(redis, current.refreshToken);
+    const currentAccess = await signAccessToken(userId, signingKey, tokenEnv, 0, currentOwner!.familyId);
+
+    const listed = await app.inject({ method: "GET", url: "/sessions", headers: { authorization: `Bearer ${currentAccess.token}` } });
+    const sessions = (listed.json() as { sessions: Array<{ family_id: string; is_current: boolean }> }).sessions;
+    expect(sessions.filter((s) => s.is_current).map((s) => s.family_id)).toEqual([currentOwner!.familyId]);
+
+    const revoked = await app.inject({ method: "POST", url: "/sessions/revoke-others", headers: { authorization: `Bearer ${currentAccess.token}` } });
+    expect(revoked.statusCode).toBe(204);
+    expect((await rotateRefreshToken({ redis, signingKey, tokenEnv, refreshToken: current.refreshToken })).ok).toBe(true);
+    expect((await rotateRefreshToken({ redis, signingKey, tokenEnv, refreshToken: other.refreshToken })).ok).toBe(false);
+  });
+
+  it("requires a re-login before revoke-others for legacy JWTs without sid", async () => {
+    const userId = "user-no-sid";
+    const pair = await issueTokenPair({ redis, signingKey, tokenEnv, userId });
+    const response = await app.inject({ method: "POST", url: "/sessions/revoke-others", headers: { authorization: `Bearer ${await bearer(userId)}` } });
+    expect(response.statusCode).toBe(409);
+    expect((await rotateRefreshToken({ redis, signingKey, tokenEnv, refreshToken: pair.refreshToken })).ok).toBe(true);
+  });
+
   it("prunes stale-version sessions without deleting a newer login created during cleanup", async () => {
     const userId = "user-versioned";
     const stale = await issueTokenPair({ redis, signingKey, tokenEnv, userId, credentialVersion: 0 });

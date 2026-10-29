@@ -5,7 +5,7 @@ import type { Pool } from "mysql2/promise";
 import { activeCredentialVersion } from "../accountStatus.js";
 import { verifyOwnAccessTokenClaims } from "../accessAuth.js";
 import type { SigningKey } from "../keys.js";
-import { listSessions, loadTokenEnv, revokeSessionForUser, type TokenEnv } from "../tokens.js";
+import { listSessions, loadTokenEnv, revokeOtherSessions, revokeSessionForUser, type TokenEnv } from "../tokens.js";
 import { errorResponseSchema } from "./schemas.js";
 
 export interface SessionsRouteOptions {
@@ -22,8 +22,9 @@ const sessionSchema = {
     family_id: { type: "string" },
     created_at: { type: "string" },
     last_active_at: { type: "string" },
+    is_current: { type: "boolean" },
   },
-  required: ["family_id", "created_at", "last_active_at"],
+  required: ["family_id", "created_at", "last_active_at", "is_current"],
 } as const;
 
 export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOptions): Promise<void> {
@@ -65,10 +66,26 @@ export async function sessionsRoutes(app: FastifyInstance, opts: SessionsRouteOp
     async (req, reply) => {
       const identity = await authenticate(req, reply);
       if (!identity) return;
-      const sessions = await listSessions(redis, identity.userId, identity.credentialVersion);
+      const token = req.headers.authorization!.slice("Bearer ".length);
+      const claims = await verifyOwnAccessTokenClaims(token, signingKey, secondaryKey, tokenEnv);
+      const sessions = await listSessions(redis, identity.userId, identity.credentialVersion, claims?.sessionId);
       return reply.code(200).send({ sessions });
     },
   );
+
+  app.post("/sessions/revoke-others", {
+    schema: {
+      tags: ["auth"], summary: "Revoke all other sessions", response: { 204: { type: "null" }, 401: errorResponseSchema, 409: errorResponseSchema },
+    },
+  }, async (req, reply) => {
+    const identity = await authenticate(req, reply);
+    if (!identity) return;
+    const token = req.headers.authorization!.slice("Bearer ".length);
+    const claims = await verifyOwnAccessTokenClaims(token, signingKey, secondaryKey, tokenEnv);
+    if (!claims?.sessionId) return reply.code(409).send({ error: "session_identity_missing" });
+    await revokeOtherSessions(redis, identity.userId, claims?.sessionId, identity.credentialVersion);
+    return reply.code(204).send();
+  });
 
   app.delete<{ Params: { familyId: string } }>(
     "/sessions/:familyId",

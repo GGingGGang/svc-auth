@@ -4,6 +4,9 @@ import { migrateUp } from "./migrate.js";
 import { shutdownTracing } from "./observability/tracing.js";
 import { createRedisClient } from "./redis.js";
 import { buildApp } from "./router.js";
+import { loadMailConfig } from "./mailer.js";
+import { startMailWorker } from "./mailWorker.js";
+import { startDeletionWorker } from "./deletionWorker.js";
 
 const port = Number(process.env.HTTP_PORT ?? 3000);
 const version = process.env.APP_VERSION ?? "dev"; // Dockerfile 이 GIT_SHA 로 주입
@@ -28,6 +31,8 @@ async function main() {
   const secondaryKey = secondaryPem ? await loadSigningKey(secondaryPem) : undefined;
 
   const app = buildApp({ pool, redis, signingKey, secondaryKey });
+  const stopMailWorker = startMailWorker(pool, loadMailConfig());
+  const stopDeletionWorker = await startDeletionWorker(pool, redis);
 
   // graceful shutdown (go-app 의 15s 미러)
   for (const signal of ["SIGTERM", "SIGINT"] as const) {
@@ -37,6 +42,8 @@ async function main() {
       timer.unref();
       try {
         await app.close();
+        stopMailWorker();
+        await stopDeletionWorker();
         await pool.end();
         redis.disconnect();
         await shutdownTracing();

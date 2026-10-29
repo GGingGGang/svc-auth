@@ -10,7 +10,7 @@ export async function isActiveUser(pool: Pool, userId: string): Promise<boolean>
 
 export async function activeCredentialVersion(pool: Pool, userId: string): Promise<number | null> {
   const [rows] = await pool.query<RowDataPacket[]>(
-    "SELECT credential_version FROM users WHERE id = UUID_TO_BIN(?) AND status = 'active'",
+    "SELECT credential_version FROM users WHERE id = UUID_TO_BIN(?) AND status = 'active' AND email_verified_at IS NOT NULL",
     [userId],
   );
   const version = rows[0]?.credential_version;

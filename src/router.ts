@@ -21,6 +21,9 @@ import { sessionsRoutes } from "./routes/sessions.js";
 import { accountRoutes } from "./routes/account.js";
 import { passwordRoutes } from "./routes/password.js";
 import { loadTokenEnv, type TokenEnv } from "./tokens.js";
+import { loadMailConfig } from "./mailer.js";
+import { lifecycleRoutes } from "./routes/lifecycle.js";
+import { registerHttpMetrics } from "./httpMetrics.js";
 
 const okResponseSchema = {
   type: "object",
@@ -41,6 +44,7 @@ export interface BuildAppOptions {
   secondaryKey?: SigningKey;
   tokenEnv?: TokenEnv;
   loginSecurityEnv?: LoginSecurityEnv;
+  registrationMode?: "verified" | "demo";
 }
 
 export function buildApp(options: BuildAppOptions): FastifyInstance {
@@ -65,10 +69,13 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
   const { redis, signingKey, secondaryKey } = options;
   const tokenEnv = options.tokenEnv ?? loadTokenEnv();
   const loginSecurityEnv = options.loginSecurityEnv ?? loadLoginSecurityEnv();
+  const registrationMode = options.registrationMode ?? (process.env.AUTH_REGISTRATION_MODE === "demo" ? "demo" : "verified");
+  const mailConfig = loadMailConfig();
   const version = process.env.APP_VERSION ?? "dev";
 
   registerCors(app);
   registerHttpTracing(app);
+  registerHttpMetrics(app);
 
   app.setErrorHandler((error, req, reply) => {
     const failure = error as FastifyError;
@@ -120,7 +127,8 @@ export function buildApp(options: BuildAppOptions): FastifyInstance {
       },
     );
 
-    app.register(registerRoutes, { pool });
+    app.register(registerRoutes, { pool, redis, registrationMode, mailConfig });
+    app.register(lifecycleRoutes, { pool, redis, signingKey, secondaryKey, tokenEnv, mailConfig, registrationMode });
     app.register(loginRoutes, { pool, redis, signingKey, tokenEnv, loginSecurityEnv });
     app.register(refreshRoutes, { pool, redis, signingKey, tokenEnv });
     app.register(logoutRoutes, { redis });

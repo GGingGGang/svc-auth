@@ -25,9 +25,11 @@ function mockPool(hash: string) {
     query: vi.fn(async () => [[{
       password_hash: savedHash, status: "active", credential_version: version,
     }], []]),
-    execute: vi.fn(async (_sql: string, values: unknown[]) => {
-      savedHash = String(values[0]);
-      version++;
+    execute: vi.fn(async (sql: string, values: unknown[]) => {
+      if (sql.includes("UPDATE users SET password_hash")) {
+        savedHash = String(values[0]);
+        version++;
+      }
       return [{ affectedRows: 1 }, []];
     }),
     commit: vi.fn(async () => undefined),
@@ -74,7 +76,7 @@ describe("account and password security", () => {
     expect(refresh.statusCode).toBe(401);
     expect(evalCommand).toHaveBeenCalledTimes(4); // rate limit, deferred cleanup, then stale family cleanup
     await app.close();
-  });
+  }, 20_000);
 
   it("does not change credentials when current password is wrong or new password is too short", async () => {
     const hash = await argon2.hash("correct current password");

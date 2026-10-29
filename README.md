@@ -187,3 +187,14 @@ npm run test:integration  # 통합만 (vitest.integration.config.ts). Docker 데
 `src/routes/login-security.integration.test.ts` 는 MySQL+Redis testcontainers 로 로그인 rate limit, 임시 잠금·자동 해제, 동시 실패 집계를 검증한다. 매 테스트 전 `redis.flushdb()` 로 rate-limit 카운터를 초기화한다.
 
 CI: Jenkins(`services` org folder, 유닛 게이트) → Kaniko → GHCR → Trivy scan(warn) → cosign sign → deployBump → ArgoCD (배포 시 Kyverno 가 admission 에서 서명 검증, Audit). 별도로 이 repo의 `.github/workflows/test.yml` (GitHub Actions) 이 push(main)/PR 마다 유닛+통합 풀 스위트를 실행 — Jenkins 파이프라인과 병렬이며 이미지 생성 게이트에는 관여하지 않는다.
+
+## Account lifecycle configuration
+
+Public registration defaults to verified mode and fails closed unless these settings are present:
+
+- `SMTP_URL`, `SMTP_FROM`, `AUTH_MAIL_ENCRYPTION_KEY` (base64-encoded 32-byte key), and `WEB_APP_URL`.
+- Set `AUTH_REGISTRATION_MODE=demo` only for an explicitly isolated local/internal demo; it skips email confirmation.
+- `NATS_URL` publishes deletion requests and consumes durable deletion ACKs from `ACCOUNT_LIFECYCLE` (override with `ACCOUNT_LIFECYCLE_STREAM` and `AUTH_DELETION_RESULT_DURABLE`). Provision the stream, `app.account.>` subjects, durable consumer, and service ACLs before accepting deletions.
+- `INTERNAL_SERVICE_TOKEN` protects internal account-state checks. `OPERATOR_TOKENS_JSON` is a JSON object mapping operator actor names to unique bearer tokens of at least 32 characters, for example `{"security-operator":"<secret>"}`.
+
+Verification/reset tokens are only present in the encrypted mail outbox and outbound email. Links carry tokens in the URL fragment; the confirmation request sends the token in the POST body. Deletion receipts are supplied via `X-Deletion-Receipt`, never in a URL.

@@ -83,6 +83,7 @@ export async function passwordRoutes(app: FastifyInstance, opts: PasswordRouteOp
           WHERE id = UUID_TO_BIN(?)`,
         [passwordHash, claims.userId],
       );
+      await conn.execute("DELETE FROM account_action_tokens WHERE user_id=UUID_TO_BIN(?) AND purpose IN ('reset_password','change_email')", [claims.userId]);
       await conn.commit();
     } catch (err) {
       await conn.rollback();

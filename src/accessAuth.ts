@@ -25,6 +25,7 @@ export async function verifyOwnAccessToken(
 export interface OwnAccessClaims {
   userId: string;
   credentialVersion: number;
+  sessionId?: string;
 }
 
 export async function verifyOwnAccessTokenClaims(
@@ -42,7 +43,8 @@ export async function verifyOwnAccessTokenClaims(
       if (typeof payload.sub === "string" && payload.sub.length > 0) {
         const version = payload.credential_version ?? 0;
         if (Number.isSafeInteger(version) && typeof version === "number" && version >= 0) {
-          return { userId: payload.sub, credentialVersion: version };
+          if (payload.sid !== undefined && (typeof payload.sid !== "string" || payload.sid.length > 128)) return null;
+          return { userId: payload.sub, credentialVersion: version, ...(typeof payload.sid === "string" ? { sessionId: payload.sid } : {}) };
         }
       }
     } catch {

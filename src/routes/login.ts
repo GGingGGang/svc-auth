@@ -44,6 +44,7 @@ interface UserRow {
   login_locked: number;
   failure_window_expired: number;
   credential_version: number | string;
+  email_verified_at: Date | string | null;
 }
 
 export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions): Promise<void> {
@@ -59,7 +60,7 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
         summary: "Login with email/password",
         description:
           "성공 시 ES256 access JWT + opaque refresh 토큰(Redis DB0 저장)을 발급한다. " +
-          "IP/이메일 단위 rate limit 초과 시 429, 임시 로그인 잠금 중에는 401.",
+          "존재하지 않는 계정·비밀번호 오류·임시 잠금·운영 정지는 동일한 401 응답으로 처리한다. IP/이메일 제한 초과는 429.",
         body: loginBodySchema,
         response: { 200: tokenResponseSchema, 401: errorResponseSchema, 429: errorResponseSchema },
       },
@@ -84,7 +85,7 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
       try {
         await conn.beginTransaction();
         const [rows] = await conn.query(
-          `SELECT id, password_hash, status, login_failures, credential_version,
+          `SELECT id, password_hash, status, login_failures, credential_version, email_verified_at,
                   login_locked_until > UTC_TIMESTAMP(3) AS login_locked,
                   login_failure_window_started_at IS NULL OR
                     login_failure_window_started_at <= DATE_SUB(UTC_TIMESTAMP(3), INTERVAL ? SECOND) OR
@@ -99,9 +100,9 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
         }
         if (row.status === "locked" || row.login_locked) {
           await conn.rollback();
-          return reply.code(401).send({ error: "account_locked" });
+          return reply.code(401).send({ error: "invalid_credentials" });
         }
-        if (row.status !== "active") {
+        if (row.status !== "active" || !row.email_verified_at) {
           await conn.rollback();
           return reply.code(401).send({ error: "invalid_credentials" });
         }
@@ -118,7 +119,7 @@ export async function loginRoutes(app: FastifyInstance, opts: LoginRouteOptions)
             [failures, row.failure_window_expired ? 1 : 0, locked ? 1 : 0, securityEnv.lockoutDurationSeconds, row.id],
           );
           await conn.commit();
-          return reply.code(401).send({ error: locked ? "account_locked" : "invalid_credentials" });
+          return reply.code(401).send({ error: "invalid_credentials" });
         }
 
         await conn.execute(

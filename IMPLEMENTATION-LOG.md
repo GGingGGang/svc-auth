@@ -30,3 +30,33 @@ root에 다음 additive 계약안을 전달했고 root가 전체 `PLAN.md`의 �
 - `PATCH /account` → `{display_name?,timezone?}` 중 하나 이상, 잘못된 값·추가 필드는 400, 성공 시 갱신된 본인 프로필 200.
 - `POST /password/change` → Bearer와 `{current_password,new_password}`; 현재 비밀번호 오류 401, 새 비밀번호 정책 위반 400, rate-limit 초과 429 + `Retry-After`, 성공 204.
 - JWT의 additive `credential_version`은 기존 누락 토큰을 0으로 읽는다. `/introspect` 응답 모양 `{active:boolean}`은 유지하고 DB 버전을 비교한다. 토큰 claim 형식이 배포 중 함께 맞춰져야 하므로 Core의 introspect 적용을 통합 확인해야 한다.
+
+## 2026-10-29 계정 수명주기 및 운영 기능
+
+### 구현
+
+- 기본 공개가입은 `AUTH_REGISTRATION_MODE`가 비어 있거나 `verified`일 때 이메일 확인을 요구하고, SMTP 설정이 없으면 503으로 실패 종료한다. `demo`는 명시적으로 켠 로컬/내부 모드에서만 이메일 확인을 생략한다. 확인되지 않은 계정은 로그인, introspect, refresh, 프로필, 비밀번호 변경, 세션 API에서 활성 계정으로 인정하지 않는다. 미확인 사용자는 비밀번호와 확인 플래그를 제출하는 전용 탈퇴 경로만 이용할 수 있다.
+- `POST /email/verification/request`, `/email/verification/confirm`, `/password/reset/request`, `/password/reset`, `/account/email-change`를 추가했다. 확인 링크는 30분, 재설정 링크는 15분이며 256-bit 난수 토큰의 SHA-256만 저장한다. 토큰은 1회 사용, 재발급 시 같은 목적의 앞선 토큰만 교체한다. 사용자 이메일·토큰 발급과 SMTP outbox 기록은 하나의 MySQL 트랜잭션으로 묶고, outbox 본문은 AES-256-GCM으로 암호화한다. Nodemailer SMTP worker는 재시도하며 PII나 토큰을 로그에 남기지 않는다. 확인 및 재설정 요청은 이메일별 분당 1회/시간당 5회, IP별 시간당 20회로 제한한다.
+- 비밀번호/이메일 변경 시 기존 복구 토큰을 무효화하고 `credential_version`을 올려 이전 access/refresh 토큰을 거부한다. 비밀번호 재설정은 토큰 유효성 확인 뒤에만 Argon2를 실행하고, 트랜잭션 안에서 단일 사용 처리·잠금 카운터 초기화·버전 증가를 수행한다. SMTP/외부 이메일은 테스트 중 한 건도 전송하지 않았다.
+- JWT에 additive `sid`(refresh family ID)를 넣었다. `GET /sessions`는 `is_current`를 제공하고 `POST /sessions/revoke-others`는 같은 credential version의 다른 세션만 Redis Lua로 폐기한다. `sid`가 없는 구형 토큰은 409 `session_identity_missing`을 반환해 재로그인을 요구한다.
+- `DELETE /account`와 미확인 계정용 `POST /account/deletion/unverified`는 재인증, 동의 플래그, 별도 rate limit을 요구한다. 계정은 DB 트랜잭션 안에서 즉시 `deleting`으로 바뀌고 버전 증가, 무작위 receipt hash, 서비스 ACK 상태, durable DB outbox를 함께 기록한다. `app.account.deletion_requested.v1`을 JetStream `ACCOUNT_LIFECYCLE`에 발행하고 `app.account.deletion_result.v1`의 core/batch/notify ACK를 모두 받은 뒤 Redis 세션과 계정을 정리한다. outbox가 결과를 기다리는 동안 주기적으로 재전달하므로 30일 stream 보존기간 뒤에도 재시도가 가능하다. 완료 전까지 이메일은 unique constraint에 남아 재가입을 막는다.
+- 내부 계정 상태 조회는 `GET /internal/accounts/:userId/status`에서 `INTERNAL_SERVICE_TOKEN` Bearer를 constant-time 비교하고 `{active,timezone?}`를 반환한다. 운영 정지/해제는 Swagger에서 숨긴 `/internal/accounts/:userId/suspend|unsuspend`에 `OPERATOR_TOKENS_JSON`의 actor->token 맵을 사용한다. actor는 요청 body에서 받지 않는다. 정지는 상태를 잠그고 버전을 증가시키며, 해제는 미확인/삭제/삭제 진행 중 계정을 활성화하지 않는다. 운영 조치는 사유·actor·대상·시각과 함께 감사 테이블에 기록한다.
+- `auth_http_requests_total{method,route,status_code}` 및 `auth_http_request_duration_seconds{method,route,status_code}`를 추가했다. route 라벨은 Fastify 경로 템플릿이라 이메일, 사용자 ID, 토큰, raw path는 측정값에 포함되지 않는다.
+
+### API 계약
+
+- 확인/복구 요청은 계정 존재 여부와 무관하게 `202 {accepted:true}`로 응답하며, rate limit은 429, 메일 설정 부재는 503 `email_unavailable`로 실패 종료한다. 확인은 `POST /email/verification/confirm {token}`이며 `{verified:true}` 또는 `{email_changed:true}`를 반환한다. 재설정은 `POST /password/reset {token,new_password}`이며 성공 시 204다.
+- 검증된 계정 탈퇴는 `DELETE /account {current_password,confirm:true}` -> `202 {deletion_receipt}`. 미확인 계정은 `POST /account/deletion/unverified {email,password,confirm:true}` -> 일반적으로 202 `{accepted:true}`이며 인증된 요청에만 receipt가 포함된다. 진행 조회는 `GET /account/deletion`에 `X-Deletion-Receipt` 헤더를 전달한다. receipt를 URL query/path에 넣지 않는다.
+- 내부 상태 조회 응답은 활성 검증 계정 `{active:true,timezone}`; 미확인/정지/삭제/미존재는 `{active:false}`다. 내부 토큰 설정 누락은 503, 토큰 오류는 401이다.
+- 탈퇴 요청 이벤트 payload는 `{event_id,request_id,user_id,credential_version,occurred_at}`이고 이메일 등 계정 PII를 담지 않는다. 서비스별 결과 ACK는 `{event_id,request_id,service,status,occurred_at}`다. stream/durable은 서비스 운영 설정에서 provision해야 한다.
+
+### 검증
+
+- `npm test`: 12개 테스트 파일, 41개 테스트 통과. 암호화 payload tamper 검출, fake SMTP transport에서 fragment 링크 사용, 공개 가입 fail-closed, 내부 bearer/actor 인증, 미확인 탈퇴 확인, reset 토큰 단일 사용/버전 증가, 고정 metric 라벨을 검사했다. 기존 세션 통합 테스트에 sid 기반 현재 세션/기타 세션 폐기와 sid 없는 JWT 거절도 추가했다.
+- `npm run build` 및 `npx tsc --noEmit`: 통과.
+- Testcontainers 통합 테스트는 이 환경에 Docker daemon이 없어 실행하지 않았다. MySQL migration의 실제 적용/JetStream 서비스 ACK 및 실제 SMTP 전송은 실환경 설정 후 확인해야 한다. 테스트에서는 실제 이메일을 보내지 않았다.
+
+### 남은 외부 운영 확인
+
+- ACC-009~013, LGN-013, SES-011/012, ACN-001~013, OPS-001/006의 서비스 코드·단위 검증을 구현했다. SMTP URL/발신자/32-byte 암호화 키와 `WEB_APP_URL`, `INTERNAL_SERVICE_TOKEN`, `OPERATOR_TOKENS_JSON`, NATS_URL 및 ACCOUNT_LIFECYCLE stream/durable ACL은 운영 배포에서 설정되어야 한다. SMTP/NATS 미설정 상태에서 공개 가입은 실패 종료하고, 탈퇴 outbox는 DB에 보존된다.
+- 다른 서비스의 삭제 소비자가 성공 ACK를 내는 것과 운영 ingress가 `/internal/*`를 외부에 노출하지 않는지는 통합 환경에서 확인이 필요하다. 확인되지 않은 백업의 즉시 파기를 주장하지 않는다. ACN-012의 backup retention/compliance 증빙은 운영 정책 소유자 확인이 남아 있다.

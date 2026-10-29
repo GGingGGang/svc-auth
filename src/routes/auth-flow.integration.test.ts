@@ -17,7 +17,8 @@ const migrationSql = readFileSync(
   fileURLToPath(new URL("../../db/migrations/0001_init.up.sql", import.meta.url)),
   "utf8",
 ) + readFileSync(fileURLToPath(new URL("../../db/migrations/0002_login_lockout.up.sql", import.meta.url)), "utf8")
-  + readFileSync(fileURLToPath(new URL("../../db/migrations/0003_credential_version.up.sql", import.meta.url)), "utf8");
+  + readFileSync(fileURLToPath(new URL("../../db/migrations/0003_credential_version.up.sql", import.meta.url)), "utf8")
+  + readFileSync(fileURLToPath(new URL("../../db/migrations/0004_account_lifecycle.up.sql", import.meta.url)), "utf8");
 
 const tokenEnv: TokenEnv = { issuer: "auth.test", accessTtlSeconds: 3600, refreshTtlSeconds: 1_209_600 };
 
@@ -59,7 +60,7 @@ describe("login -> refresh (rotation) -> reuse detection -> logout", () => {
     redis = new Redis({ host: redisContainer.getHost(), port: redisContainer.getPort(), db: 0 });
     signingKey = await generateTestSigningKey();
 
-    app = buildApp({ pool, redis, signingKey, tokenEnv });
+    app = buildApp({ pool, redis, signingKey, tokenEnv, registrationMode: "demo" });
     await app.ready();
   }, 180_000);
 

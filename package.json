@@ -16,6 +16,8 @@
   "dependencies": {
     "@fastify/swagger": "^9.8.1",
     "@fastify/swagger-ui": "^6.1.0",
+    "@nats-io/jetstream": "^3.4.0",
+    "@nats-io/transport-node": "^3.4.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/core": "^2.10.0",
     "@opentelemetry/exporter-trace-otlp-grpc": "^0.221.0",
@@ -26,6 +28,7 @@
     "ioredis": "^5.11.1",
     "jose": "^6.2.3",
     "mysql2": "^3.22.5",
+    "nodemailer": "^10.3.0",
     "prom-client": "^15.1.3",
     "uuidv7": "^1.2.1"
   },
@@ -33,6 +36,7 @@
     "@testcontainers/mysql": "^12.0.4",
     "@testcontainers/redis": "^12.0.4",
     "@types/node": "^22.10.7",
+    "@types/nodemailer": "^8.0.2",
     "testcontainers": "^12.0.4",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
