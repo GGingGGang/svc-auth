@@ -60,3 +60,10 @@ root에 다음 additive 계약안을 전달했고 root가 전체 `PLAN.md`의 �
 
 - ACC-009~013, LGN-013, SES-011/012, ACN-001~013, OPS-001/006의 서비스 코드·단위 검증을 구현했다. SMTP URL/발신자/32-byte 암호화 키와 `WEB_APP_URL`, `INTERNAL_SERVICE_TOKEN`, `OPERATOR_TOKENS_JSON`, NATS_URL 및 ACCOUNT_LIFECYCLE stream/durable ACL은 운영 배포에서 설정되어야 한다. SMTP/NATS 미설정 상태에서 공개 가입은 실패 종료하고, 탈퇴 outbox는 DB에 보존된다.
 - 다른 서비스의 삭제 소비자가 성공 ACK를 내는 것과 운영 ingress가 `/internal/*`를 외부에 노출하지 않는지는 통합 환경에서 확인이 필요하다. 확인되지 않은 백업의 즉시 파기를 주장하지 않는다. ACN-012의 backup retention/compliance 증빙은 운영 정책 소유자 확인이 남아 있다.
+
+### 2026-10-29 삭제 프로토콜 후속 대조
+
+- 현재 auth 발행 이벤트와 소비자 구현을 대조했다. subject는 `app.account.deletion_requested.v1`, 결과는 `app.account.deletion_result.v1`, stream은 `ACCOUNT_LIFECYCLE`이며 공통 payload 필드와 `core`/`batch`/`notify` service 이름이 일치한다. 실제 consumer durable은 core `svc-core-account-deletion`, batch `batch-account-deletions`, notify `notify-account-cleanup`; auth 결과 durable 기본값은 `auth-deletion-results`다. 모든 소비자는 정리 성공 후 `completed` ACK를 내고, 재시도는 처리 실패 시 NAK 또는 core `retry` ACK로 표현한다.
+- auth의 DB outbox는 동일 event ID로 재발행하며 완료 ACK를 서비스별 DB 상태에 반영한다. `retry` ACK는 즉시 재발행을 예약한다. 3개 서비스 완료 후 세션 폐기 및 사용자 hard delete를 수행하고 receipt 상태를 `completed`로 바꾼 뒤 outbox를 제거한다. DB/Redis 처리 실패 시 JetStream ACK 전에 NAK되어 재전달된다. receipt 원문은 `X-Deletion-Receipt`로만 받으며 DB에는 해시만 저장한다.
+- 대조 중 발견한 결함을 수정했다. auth가 시작될 때 stream/durable 조회에 실패하면 결과 consumer가 영구 종료되던 동작을 supervised retry로 바꿨다. 연결이 닫힌 경우 재연결하고, provisioning 전/일시 장애는 5초 간격으로 다시 조회한다. stream/durable은 계속 외부 운영 설정으로 관리하며 auth가 만들지 않는다. 발행 및 consumer 장애는 payload/URL을 포함하지 않는 코드형 로그를 분당 한 번 남긴다.
+- `npm test`: 13개 파일, 43개 테스트 통과(삭제 ACK 계약 검증과 consumer 재획득 회귀 포함). `npm run build`, `npx tsc --noEmit`, `git diff --check` 통과. 실 NATS/DB 종단 간 재전달은 Docker/NATS 환경 부재로 미실행이며 운영 stream ACL, consumer provisioning, ingress 노출 여부 및 backup retention/compliance 확인은 여전히 운영 확인 항목이다. SMTP 및 Telegram 발송 설정은 변경하지 않았고 전송도 하지 않았다.

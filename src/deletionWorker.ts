@@ -8,7 +8,42 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 interface PendingDeletion extends RowDataPacket { event_id: string; request_id: string; user_id: Buffer; credential_version: number | string }
-interface DeletionResult { event_id: string; request_id: string; service: "core" | "batch" | "notify"; status: "completed" | "retry" }
+export interface DeletionResult { event_id: string; request_id: string; service: "core" | "batch" | "notify"; status: "completed" | "retry"; occurred_at: string }
+
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+
+export function parseDeletionResult(value: unknown): DeletionResult {
+  if (typeof value !== "object" || value === null) throw new Error("invalid_deletion_ack");
+  const result = value as Partial<DeletionResult>;
+  if (typeof result.request_id !== "string" || !uuidPattern.test(result.request_id) ||
+      typeof result.event_id !== "string" || !uuidPattern.test(result.event_id) ||
+      !["core", "batch", "notify"].includes(result.service ?? "") ||
+      !["completed", "retry"].includes(result.status ?? "") ||
+      typeof result.occurred_at !== "string" || !Number.isFinite(Date.parse(result.occurred_at))) {
+    throw new Error("invalid_deletion_ack");
+  }
+  return result as DeletionResult;
+}
+
+export async function superviseDeletionResults<T>(
+  getMessages: () => Promise<AsyncIterable<T>>,
+  handle: (message: T) => Promise<void>,
+  isStopped: () => boolean,
+  wait: () => Promise<void>,
+  onUnavailable: () => void,
+): Promise<void> {
+  while (!isStopped()) {
+    try {
+      for await (const message of await getMessages()) {
+        await handle(message);
+        if (isStopped()) break;
+      }
+    } catch {
+      if (!isStopped()) onUnavailable();
+    }
+    if (!isStopped()) await wait();
+  }
+}
 
 async function publishPending(pool: Pool, js: ReturnType<typeof jetstream>): Promise<void> {
   const conn = await pool.getConnection();
@@ -34,9 +69,7 @@ async function publishPending(pool: Pool, js: ReturnType<typeof jetstream>): Pro
   }
 }
 
-async function acceptResult(pool: Pool, redis: Redis, result: DeletionResult): Promise<void> {
-  if (!result || !/^[0-9a-f-]{36}$/iu.test(result.request_id) || !/^[0-9a-f-]{36}$/iu.test(result.event_id) ||
-      !["core", "batch", "notify"].includes(result.service) || !["completed", "retry"].includes(result.status)) throw new Error("invalid_deletion_ack");
+export async function acceptResult(pool: Pool, redis: Redis, result: DeletionResult): Promise<void> {
   const conn = await pool.getConnection();
   let completedUser: { userId: string; userIdBytes: Buffer } | null = null;
   try {
@@ -76,23 +109,54 @@ async function acceptResult(pool: Pool, redis: Redis, result: DeletionResult): P
 
 export async function startDeletionWorker(pool: Pool, redis: Redis, natsUrl = process.env.NATS_URL): Promise<() => Promise<void>> {
   if (!natsUrl) return async () => undefined;
-  const nc = await connect({ servers: natsUrl, name: "svc-auth-account-lifecycle" });
-  const js = jetstream(nc);
   let stopped = false;
-  const timer = setInterval(() => { if (!stopped) void publishPending(pool, js).catch(() => undefined); }, 1000);
+  let js: ReturnType<typeof jetstream> | undefined;
+  let nc: Awaited<ReturnType<typeof connect>> | undefined;
+  let activeMessages: { stop: (err?: Error) => void } | undefined;
+  let lastPublishWarning = 0;
+  const timer = setInterval(() => {
+    if (!stopped && js) void publishPending(pool, js).catch(() => {
+      const now = Date.now();
+      if (now - lastPublishWarning >= 60_000) {
+        lastPublishWarning = now;
+        console.warn("auth_deletion_outbox_publish_failed");
+      }
+    });
+  }, 1000);
   timer.unref();
   const stream = process.env.ACCOUNT_LIFECYCLE_STREAM ?? "ACCOUNT_LIFECYCLE";
   const durable = process.env.AUTH_DELETION_RESULT_DURABLE ?? "auth-deletion-results";
-  void (async () => {
-    try {
-      const consumer = await js.consumers.get(stream, durable);
-      const messages = await consumer.consume({ max_messages: 10 });
-      for await (const message of messages) {
-        try { await acceptResult(pool, redis, JSON.parse(decoder.decode(message.data)) as DeletionResult); message.ack(); }
-        catch { message.nak(5000); }
-        if (stopped) break;
+  const waitBeforeRetry = () => new Promise<void>((resolve) => { const retryTimer = setTimeout(resolve, 5000); retryTimer.unref(); });
+  let lastUnavailableWarning = 0;
+  const task = superviseDeletionResults(
+    async () => {
+      if (nc?.isClosed()) { nc = undefined; js = undefined; }
+      nc ??= await connect({ servers: natsUrl, name: "svc-auth-account-lifecycle" });
+      js = jetstream(nc);
+      const messages = await (await js.consumers.get(stream, durable)).consume({ max_messages: 10 });
+      activeMessages = messages;
+      return messages;
+    },
+    async (message) => {
+      const resultMessage = message as { data: Uint8Array; ack: () => void; nak: (delay: number) => void };
+      try { await acceptResult(pool, redis, parseDeletionResult(JSON.parse(decoder.decode(resultMessage.data)))); resultMessage.ack(); }
+      catch { resultMessage.nak(5000); }
+    },
+    () => stopped,
+    waitBeforeRetry,
+    () => {
+      const now = Date.now();
+      if (now - lastUnavailableWarning >= 60_000) {
+        lastUnavailableWarning = now;
+        console.warn("auth_deletion_result_consumer_unavailable");
       }
-    } catch { /* durable consumer is provisioned with the ACCOUNT_LIFECYCLE stream */ }
-  })();
-  return async () => { stopped = true; clearInterval(timer); await nc.drain(); };
+    },
+  );
+  return async () => {
+    stopped = true;
+    clearInterval(timer);
+    activeMessages?.stop();
+    await nc?.drain();
+    await task;
+  };
 }
